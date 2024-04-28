@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+plotly
+nbformat
+matplotlib
+tqdm
+scikit-learn
+jax
+equinox
