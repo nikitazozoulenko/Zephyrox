@@ -4,9 +4,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from features.base import TimeseriesFeatureTransformer
+from features.random_fourier_features import RandomFourierFeatures
 
 ################################################################  |
 ################# For the vanilla signature ####################  |
@@ -60,20 +61,20 @@ def linear_tensorised_random_projection_features(
 class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
     def __init__(
             self,
+            seed: PRNGKeyArray,
             n_features: int = 512,
             trunc_level: int = 3, #signature truncation level
             max_batch: int = 128,
-            seed: int = 0,
         ):
         """
         Transformer class for randomized vanilla truncated signature 
         features via tensorized random projections.
 
         Args:
+            seed (PRNGKeyArray): Random seed for random matrices.
             n_features (int): Size of random projection.
             trunc_level (int): Signature truncation level.
             max_batch (int): Maximum batch size for computations.
-            seed (int): Random seed for random matrices.
         """
         super().__init__(max_batch)
         self.n_features = n_features
@@ -97,7 +98,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
         
         #initialize the tensorized projection matrix for each truncation level
         self.P = jax.random.normal(
-            jax.random.PRNGKey(self.seed), 
+            self.seed, 
             (self.trunc_level, self.n_features, d),
             dtype=dtype
         )
@@ -132,130 +133,75 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
 # ################# For the RBF-lifted signature ####################  |
 # ################################################################### \|/
 
-# @torch.jit.script
-# def calc_P_RFF(
-#         X: Tensor,
-#         rff_weights_m : Tensor,
-#         P_m: Tensor,
-#         D: int,
-#     ):
-#     """
-#     Intermediate step in the calculation of the TRP-RFSF features.
-#     See Algo 3 in https://arxiv.org/pdf/2311.12214.pdf.
+class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
+    def __init__(
+            self,
+            trp_seed: PRNGKeyArray,
+            rff_seed: PRNGKeyArray,
+            n_features: int = 512,
+            trunc_level: int = 3, #signature truncation level
+            rbf_dimension: int = 512,
+            sigma :float = 1.0,
+            max_batch: int = 128,
+            rff_max_batch: int = 2000,
+        ):
+        """
+        Transformer class for randomized RBF truncated signature 
+        features via tensorized random projections.
 
-#     Args:
-#         X (Tensor): Tensor of shape (..., T, d) of time series.
-#         rff_weights_m (Tensor): Tensor of shape (d, D) of RFF weights.
-#         P_m (Tensor): Shape (2D, D) with i.i.d. standard Gaussians.
-#         D (int): RFF dimension.
-#     """
-#     matmul = X @ rff_weights_m #shape (..., T, D)
-#     rff = torch.cat([torch.cos(matmul), 
-#                      torch.sin(matmul)], 
-#                      dim=-1) / D**0.5 #shape (..., T, 2D)
-#     U = rff.diff(dim=-2) @ P_m #shape (..., T-1, D)
-#     return U
-
-
-
-# @torch.jit.script
-# def rff_tensorised_random_projection_features(
-#         X: Tensor,
-#         trunc_level: int,
-#         rff_weights: Tensor,
-#         P: Tensor,
-#     ):
-#     """
-#     Calculates the TRP-RFSF features for the given input tensor,
-#     when the underlying kernel is the RBF kernel. See Algo 3 in
-#     https://arxiv.org/pdf/2311.12214.pdf.
-
-#     Args:
-#         X (Tensor): Tensor of shape (..., T, d) of time series.
-#         trunc_level (int): Truncation level of the signature transform.
-#         rff_weights (Tensor): Tensor of shape (trunc_level, d, D) with
-#             independent RFF weights for each truncation level.
-#         P (Tensor): Shape (trunc_level, 2D, D) with i.i.d. standard 
-#             Gaussians.
-
-#     Returns:
-#         Tensor: Tensor of shape (trunc_level, ..., D) of TRP-RFSF features
-#             for each truncation level.
-#     """
-#     #first level
-#     D = P.shape[-1]
-#     V = calc_P_RFF(X, rff_weights[0], P[0], D) / D**0.5  #shape (..., T-1, D)
-
-#     #subsequent levels
-#     for m in range(1, trunc_level):
-#         U = calc_P_RFF(X, rff_weights[m], P[m], D) #shape (..., T-1, D)
-#         V = cumsum_shift1(V, dim=-2) * U           #shape (..., T-1, D)
-    
-#     return V.sum(dim=-2)
+        Args:
+            trp_seed (PRNGKeyArray): Random seed for tensorized random projections.
+            rff_seed (PRNGKeyArray): Random seed for fourier features.
+            n_features (int): Size of random projection.
+            trunc_level (int): Signature truncation level.
+            rbf_dimension (int): Dimension of Random Fourier Features (RFF) map.
+            sigma (float): Sigma parameter of the RBF kernel.
+            max_batch (int): Maximum batch size for computations.
+        """
+        super().__init__(max_batch)
+        self.linear_trp = SigVanillaTensorizedRandProj(
+            trp_seed,
+            n_features,
+            trunc_level,
+            max_batch,
+        )
+        self.rff = RandomFourierFeatures(
+            rff_seed,
+            rbf_dimension,
+            sigma,
+            rff_max_batch,
+        )
 
 
+    def fit(self, X: Float[Array, "N  T  D"]):
+        """
+        Initializes the Tensorized Random Projections of the for 
+        the vanilla signature (corresponding to the linear kernel),
+        and the Random Fourier Features (RFF) for the RBF kernel.
 
-# class SigRBFTensorizedRandProj():
-#     def __init__(
-#             self,
-#             trunc_level: int, #signature truncation level
-#             n_features: int, #TRP dimension and RBF RFF dimension/2
-#             sigma: float, #RBF parameter
-#         ):
-#         self.trunc_level = trunc_level
-#         self.n_features = n_features
-#         self.sigma = sigma
+        Args:
+            X (Float[Array, "N  T  D"]): Example batched time series data.
+        """
+        # bad, i dont like having to follow the sci-kit learn API.
+        # Fix is to instead use equinox modules, but i would need to specify input dimensions.
+        self.rff.fit(X[0])
+        test_rff = self.rff.transform(X[0:1, 0, :])
+        self.linear_trp.fit(test_rff)
+        return self
 
 
-#     def fit(self, X: Tensor, y=None):
-#         """
-#          Initializes the random weights for the TRP-RFSF map for the 
-#         RBF kernel. This is 'trunc_level' independent RFF weights, 
-#         and (trunc_level, 2D, D) matrix of i.i.d. standard Gaussians 
-#         for the tensorized projection.
+    def _batched_transform(
+            self,
+            X: Float[Array, "N  T  D"],
+        ) -> Float[Array, "N  trunc_level  n_features"]:
+        """
+        Computes the RBF TRP features for the given batched input array.
 
-#         Args:
-#             X (Tensor): Example input tensor of shape (N, T, d).
-#         """
-#         # Get shape, dtype and device info.
-#         d = X.shape[-1]
-#         device = X.device
-#         dtype = X.dtype
+        Args:
+            X (Float[Array, "N  T  D"]): A single time series.
         
-#         #initialize the RFF weights for each truncation level
-#         self.rff_weights = torch.randn(
-#                     self.trunc_level,
-#                     d,
-#                     self.n_features, 
-#                     device=device,
-#                     dtype=dtype
-#                     ) / self.sigma
-        
-#         #initialize the tensorized projection matrix for each truncation level
-#         self.P = torch.randn(self.trunc_level,
-#                              2*self.n_features, 
-#                              self.n_features,
-#                              device=device,
-#                              dtype=dtype,)
-#         return self
-
-            
-#     def transform(
-#             self,
-#             X:Tensor,
-#         ):
-#         """
-#         Computes the RBF TRP-RFSF features for the given input tensor,
-#         mapping time series from (T,d) to (n_features).
-
-#         Args:
-#             X (Tensor): Tensor of shape (N, T, d).
-        
-#         Returns:
-#             Tensor: Tensor of shape (N, n_features).
-#         """
-#         features = rff_tensorised_random_projection_features(
-#             X, self.trunc_level, self.rff_weights, self.P
-#             )
-#         return features
-        
+        Returns:
+            Time series features of shape (N, trunc_level, n_features).
+        """
+        rff = self.rff.transform(X)
+        return self.linear_trp.transform(rff)
