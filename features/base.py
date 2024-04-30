@@ -7,31 +7,8 @@ import jax.numpy as jnp
 import jax.lax as lax
 from jaxtyping import Array, Float, Int
 from sklearn.base import TransformerMixin, BaseEstimator
+from netket.jax import apply_chunked
 
-#######################################  |
-########### Helper function ###########  |
-####################################### \|/
-
-def split_maxbatch(
-        X: Float[Array, "N  ..."], 
-        max_batch: int
-    ) -> Tuple[List[Array], Array]:
-    """
-    Splits the input array into batches of size max_batch,
-    and a rest array with the remaining data.
-
-    Args:
-        X (Float[Array, "N  ..."]): Input array.
-        max_batch (int): Maximum batch size.
-    
-    Returns:
-        Tuple[List[Array], Array]: List of batches and the remaining data.
-    """
-    N = X.shape[0]
-    n_batches = N // max_batch
-    batched = X[:n_batches*max_batch].reshape(n_batches, max_batch, *X.shape[1:])
-    rest = X[n_batches*max_batch:]
-    return batched, rest
 
 ###########################################  |
 ########### Abstract Base Class ###########  |
@@ -81,20 +58,8 @@ class TimeseriesFeatureTransformer(ABC, TransformerMixin, BaseEstimator):
         Returns:
             (Float[Array, "N  ..."]): The batched time series features.
         """
-        batch_list, rest = split_maxbatch(X, self.max_batch)
-        if batch_list.size == 0:
-            batch_list = jnp.array([rest])
-            rest = jnp.array([])
-
-        carry, features = lax.scan(
-            lambda c, x: (c, self._batched_transform(x)),
-            None,
-            batch_list
+        trans_chunked = apply_chunked(
+            self._batched_transform,
+            chunk_size=self.max_batch
         )
-        features = jnp.concatenate(features, axis=0)
-
-        if rest.size > 0:
-            rest_features = self._batched_transform(rest)
-            features = jnp.concatenate([features, rest_features], axis=0)
-        
-        return features
+        return trans_chunked(X)

@@ -107,8 +107,6 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
         #vmap the transform
         self.vmapped_transform = jax.vmap(
             lambda x: linear_tensorised_random_projection_features(x, self.P),
-            in_axes = 0,
-            out_axes = 0
         )
 
         return self
@@ -183,7 +181,8 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             X (Float[Array, "N  T  D"]): Example batched time series data.
         """
         # bad, i dont like having to follow the sci-kit learn API.
-        # Fix is to instead use equinox modules, but i would need to specify input dimensions.
+        # Fix is to instead use equinox modules, but i would need to 
+        # specify input dimensions at class init.
         self.rff.fit(X[0])
         test_rff = self.rff.transform(X[0:1, 0, :])
         self.linear_trp.fit(test_rff)

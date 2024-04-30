@@ -17,7 +17,7 @@ def random_fourier_features(
     """
     Computes the random Fourier features for the RBF kernel.
     Assumes the array 'random_matrix' has already been multiplied 
-    by 1/sqrt(sigma * n_features).
+    by 1/sigma.
 
     Args:
         X (Float[Array, "N  D"]): Batched input array.
@@ -71,8 +71,7 @@ class RandomFourierFeatures(TimeseriesFeatureTransformer):
         """
         # Initialize the random matrix
         D = X.shape[-1]
-        self.weights = jax.random.normal(self.seed, (D, self.n_features//2))
-        self.weights /= np.sqrt(2 * (self.n_features//2) * self.sigma)
+        self.weights = jax.random.normal(self.seed, (D, self.n_features//2)) / self.sigma
 
 
     def _batched_transform(
@@ -88,4 +87,4 @@ class RandomFourierFeatures(TimeseriesFeatureTransformer):
         Returns:
             Random Fourier features of shape (N, n_features).
         """
-        return random_fourier_features(X, self.weights)
+        return random_fourier_features(X, self.weights) / np.sqrt(2 * (self.n_features//2) )
