@@ -106,7 +106,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
 
         #vmap the transform
         self.vmapped_transform = jax.vmap(
-            lambda x: linear_tensorised_random_projection_features(x, self.P),
+            lambda x: linear_tensorised_random_projection_features(x, self.P)[-1],
         )
 
         return self
@@ -115,7 +115,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
     def _batched_transform(
             self,
             X: Float[Array, "N  T  D"],
-        ) -> Float[Array, "N  trunc_level  n_features"]:
+        ) -> Float[Array, "N  n_features"]:
         """
         Computes the TRP features for the given batched input array.
 
@@ -123,7 +123,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
             X (Float[Array, "N  T  D"]): A single time series.
         
         Returns:
-            Time series features of shape (N, trunc_level, n_features).
+            Time series features of shape (N, n_features).
         """
         return self.vmapped_transform(X)
     
@@ -157,6 +157,14 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             max_batch (int): Maximum batch size for computations.
         """
         super().__init__(max_batch)
+        self.n_features = n_features
+        self.trunc_level = trunc_level
+        self.rbf_dimension = rbf_dimension
+        self.sigma = sigma
+        self.trp_seed = trp_seed
+        self.rff_seed = rff_seed
+        self.max_batch = max_batch
+        self.rff_max_batch = rff_max_batch
         self.linear_trp = SigVanillaTensorizedRandProj(
             trp_seed,
             n_features,
@@ -192,7 +200,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
     def _batched_transform(
             self,
             X: Float[Array, "N  T  D"],
-        ) -> Float[Array, "N  trunc_level  n_features"]:
+        ) -> Float[Array, "N  n_features"]:
         """
         Computes the RBF TRP features for the given batched input array.
 
@@ -200,7 +208,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             X (Float[Array, "N  T  D"]): A single time series.
         
         Returns:
-            Time series features of shape (N, trunc_level, n_features).
+            Time series features of shape (N, n_features).
         """
         rff = self.rff.transform(X)
         return self.linear_trp.transform(rff)

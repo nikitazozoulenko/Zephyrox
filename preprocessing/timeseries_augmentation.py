@@ -25,8 +25,8 @@ def normalize_mean_std(
 
 
 def normalize_mean_std_traindata(
-        train: Float[Array, "N ..."],
-        test: Float[Array, "N ..."],
+        train: Float[Array, "N1 ..."],
+        test: Float[Array, "N2 ..."],
         epsilon: float = 0.00001,
     ):
     """Normalize 'train' and 'test' across axis=0 using mean and std
@@ -210,27 +210,27 @@ def T_visibility(X: Float[Array, "... T D"]):
 
 
 
-# def normalize_streams(train:Tensor, 
-#                       test:Tensor,
-#                       max_T:int = 100,
-#                       ):
-#     """Inputs are 3D arrays of shape (N, T, d) where N is the number of time series, 
-#     T is the length of each time series, and d is the dimension of each time series.
-#     Performs average pooling to reduce the length of the time series to at most max_T,
-#     z-score normalization, basepoint addition, and time augmentation.
-#     """
-#     # Make time series length smaller
-#     _, T, d = train.shape
-#     if T > max_T:
-#         pool_size = 1 + (T-1) // max_T
-#         train = avg_pool_time(train, pool_size)
-#         test = avg_pool_time(test, pool_size)
+def normalize_streams(train:Float[Array, "N1  T  D"], 
+                      test:Float[Array, "N2  T  D"],
+                        max_T:int=1000
+                      ):
+    """Inputs are 3D arrays of shape (N, T, d) where N is the number of time series, 
+    T is the length of each time series, and d is the dimension of each time series.
+    Performs average pooling to reduce the length of the time series to at most max_T,
+    z-score normalization, basepoint addition, and time augmentation.
+    """
+    # Make time series length smaller
+    _, T, d = train.shape
+    if T > max_T:
+        pool_size = 1 + (T-1) // max_T
+        train = avg_pool_time(train, pool_size)
+        test = avg_pool_time(test, pool_size)
 
-#     # Normalize data by training set mean and std
-#     train, test = z_score_normalize(train, test)
+    # Normalize data by training set mean and std
+    train, test = normalize_mean_std_traindata(train, test)
 
-#     # clip to avoid numerical instability
-#     c = 5.0
-#     train = train.clip(-c, c)
-#     test = test.clip(-c, c)
-#     return train, test
+    # clip to avoid numerical instability
+    c = 5.0
+    train = train.clip(-c, c)
+    test = test.clip(-c, c)
+    return train, test

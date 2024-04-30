@@ -3,8 +3,11 @@ pandas
 scipy
 plotly
 nbformat
+h5py
+aeon
 matplotlib
 tqdm
 scikit-learn
 jax
 equinox
+git+https://github.com/netket/netket.git#egg=netket[all]
