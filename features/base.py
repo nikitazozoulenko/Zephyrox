@@ -5,7 +5,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 from sklearn.base import TransformerMixin, BaseEstimator
 from netket.jax import apply_chunked
 
@@ -123,3 +123,43 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
         N, T, D = X.shape
         X = (X - self.mean) / (self.std + self.epsilon)
         return X.reshape(N, -1)
+    
+
+#################################################  |
+########### 100% Random No Information ##########  |
+################################################# \|/
+
+
+class RandomNoInformation(TimeseriesFeatureTransformer):
+    def __init__(
+            self,
+            seed : PRNGKeyArray = jax.random.PRNGKey(0),
+            n_features: int = 512,
+            max_batch: int = 1000000,
+        ):
+        """
+        Class that generates random normal features 
+        independent of input data, containing no meaningful 
+        information.
+
+        Args:
+            seed (PRNGKeyArray): Random seed for random features.
+            n_features (int): Number of random features.
+            max_batch (int): Maximum batch size for computations.
+        """
+        super().__init__(max_batch)
+        self.seed = seed
+        self.n_features = n_features
+
+
+    def fit(self, X, y=None):
+        pass
+
+
+    def _batched_transform(
+        self, 
+        X: Float[Array, "N  T  D"],
+    ) -> Float[Array, "N  n_features"]:
+        N, T, D = X.shape
+        self.seed, gen_seed = jax.random.split(self.seed)
+        return jax.random.normal(gen_seed, (N, self.n_features))

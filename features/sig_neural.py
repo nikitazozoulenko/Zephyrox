@@ -96,7 +96,7 @@ class RandomizedSignature(TimeseriesFeatureTransformer):
             (self.n_features, self.n_features, D),
             dtype=dtype
         )
-        self.A /= np.sqrt(self.n_features * D * T)
+        self.A /= np.sqrt(1)
 
         # Initialize the random biases
         self.b = jax.random.normal(
