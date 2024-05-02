@@ -27,7 +27,7 @@ def normalize_mean_std(
 def normalize_mean_std_traindata(
         train: Float[Array, "N1 ..."],
         test: Float[Array, "N2 ..."],
-        epsilon: float = 0.00001,
+        epsilon: float = 0.0000000001,
     ):
     """Normalize 'train' and 'test' across axis=0 using mean and std
     of 'train' only.

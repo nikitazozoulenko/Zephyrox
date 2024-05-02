@@ -102,7 +102,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
             (self.trunc_level, self.n_features, d),
             dtype=dtype
         )
-        self.P /= np.sqrt(self.n_features)
+        # self.P /= np.sqrt(self.n_features)
 
         #vmap the transform
         self.vmapped_transform = jax.vmap(
