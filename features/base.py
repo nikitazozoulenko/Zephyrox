@@ -125,12 +125,12 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
         return X.reshape(N, -1)
     
 
-#################################################  |
-########### 100% Random No Information ##########  |
-################################################# \|/
+###########################################################  |
+########### Random Guess (Uninformed Transfomer) ##########  |
+#####################################3##################### \|/
 
 
-class RandomNoInformation(TimeseriesFeatureTransformer):
+class RandomGuesser(TimeseriesFeatureTransformer):
     def __init__(
             self,
             seed : PRNGKeyArray = jax.random.PRNGKey(0),
@@ -161,5 +161,4 @@ class RandomNoInformation(TimeseriesFeatureTransformer):
         X: Float[Array, "N  T  D"],
     ) -> Float[Array, "N  n_features"]:
         N, T, D = X.shape
-        self.seed, gen_seed = jax.random.split(self.seed)
-        return jax.random.normal(gen_seed, (N, self.n_features))
+        return jnp.array(np.random.randn(N, self.n_features))

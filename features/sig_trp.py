@@ -106,8 +106,11 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
 
         #vmap the transform
         self.vmapped_transform = jax.vmap(
-            lambda x: linear_tensorised_random_projection_features(x, self.P)[-1],
+            lambda x: linear_tensorised_random_projection_features(x, self.P)[-1]
         )
+        # self.vmapped_transform = jax.vmap(
+        #     lambda x: jnp.concat(linear_tensorised_random_projection_features(x, self.P)[1:], axis=-1),
+        # )
 
         return self
 
@@ -134,8 +137,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
 class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
     def __init__(
             self,
-            trp_seed: PRNGKeyArray,
-            rff_seed: PRNGKeyArray,
+            seed: PRNGKeyArray,
             n_features: int = 512,
             trunc_level: int = 3, #signature truncation level
             rbf_dimension: int = 512,
@@ -148,8 +150,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
         features via tensorized random projections.
 
         Args:
-            trp_seed (PRNGKeyArray): Random seed for tensorized random projections.
-            rff_seed (PRNGKeyArray): Random seed for fourier features.
+            seed (PRNGKeyArray): Random seed.
             n_features (int): Size of random projection.
             trunc_level (int): Signature truncation level.
             rbf_dimension (int): Dimension of Random Fourier Features (RFF) map.
@@ -161,10 +162,11 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
         self.trunc_level = trunc_level
         self.rbf_dimension = rbf_dimension
         self.sigma = sigma
-        self.trp_seed = trp_seed
-        self.rff_seed = rff_seed
+        self.seed = seed
         self.max_batch = max_batch
         self.rff_max_batch = rff_max_batch
+
+        trp_seed, rff_seed = jax.random.split(seed)
         self.linear_trp = SigVanillaTensorizedRandProj(
             trp_seed,
             n_features,

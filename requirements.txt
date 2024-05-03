@@ -10,4 +10,5 @@ tqdm
 scikit-learn
 jax
 equinox
+signax
 git+https://github.com/netket/netket.git#egg=netket[all]
