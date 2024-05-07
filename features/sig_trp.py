@@ -65,6 +65,7 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
             n_features: int = 512,
             trunc_level: int = 3, #signature truncation level
             max_batch: int = 128,
+            concat_levels: bool = True,
         ):
         """
         Transformer class for randomized vanilla truncated signature 
@@ -75,11 +76,14 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
             n_features (int): Size of random projection.
             trunc_level (int): Signature truncation level.
             max_batch (int): Maximum batch size for computations.
+            concat_levels (bool): Whether to concatenate the features 
+                of each truncation level.
         """
         super().__init__(max_batch)
         self.n_features = n_features
         self.trunc_level = trunc_level
         self.seed = seed
+        self.concat_levels = concat_levels
 
 
     def fit(self, X: Float[Array, "N  T  D"]):
@@ -105,12 +109,14 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
         # self.P /= np.sqrt(self.n_features)
 
         #vmap the transform
-        self.vmapped_transform = jax.vmap(
-            lambda x: linear_tensorised_random_projection_features(x, self.P)[-1]
+        if self.concat_levels:
+            self.vmapped_transform = jax.vmap(
+                lambda x: jnp.concat(linear_tensorised_random_projection_features(x, self.P)[1:], axis=-1),
+            )
+        else:
+            self.vmapped_transform = jax.vmap(
+                lambda x: linear_tensorised_random_projection_features(x, self.P)[-1]
         )
-        # self.vmapped_transform = jax.vmap(
-        #     lambda x: jnp.concat(linear_tensorised_random_projection_features(x, self.P)[1:], axis=-1),
-        # )
 
         return self
 
@@ -144,6 +150,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             sigma :float = 1.0,
             max_batch: int = 128,
             rff_max_batch: int = 2000,
+            concat_levels: bool = True,
         ):
         """
         Transformer class for randomized RBF truncated signature 
@@ -156,6 +163,8 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             rbf_dimension (int): Dimension of Random Fourier Features (RFF) map.
             sigma (float): Sigma parameter of the RBF kernel.
             max_batch (int): Maximum batch size for computations.
+            concat_levels (bool): Whether to concatenate the features 
+                of each truncation level.
         """
         super().__init__(max_batch)
         self.n_features = n_features
@@ -165,6 +174,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
         self.seed = seed
         self.max_batch = max_batch
         self.rff_max_batch = rff_max_batch
+        self.concat_levels = concat_levels
 
         trp_seed, rff_seed = jax.random.split(seed)
         self.linear_trp = SigVanillaTensorizedRandProj(
@@ -172,6 +182,7 @@ class SigRBFTensorizedRandProj(TimeseriesFeatureTransformer):
             n_features,
             trunc_level,
             max_batch,
+            concat_levels,
         )
         self.rff = RandomFourierFeatures(
             rff_seed,

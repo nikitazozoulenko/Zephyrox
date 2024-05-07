@@ -220,11 +220,10 @@ def normalize_streams(train:Float[Array, "N1  T  D"],
     z-score normalization, basepoint addition, and time augmentation.
     """
     # Make time series length smaller
-    _, T, d = train.shape
+    N, T, D = train.shape
     if T > max_T:
-        pool_size = 1 + (T-1) // max_T
-        train = avg_pool_time(train, pool_size)
-        test = avg_pool_time(test, pool_size)
+        train = avg_pool_time(train, max_T)
+        test = avg_pool_time(test, max_T)
 
     # Normalize data by training set mean and std
     train, test = normalize_mean_std_traindata(train, test)

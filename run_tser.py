@@ -16,7 +16,7 @@ from features.sig_neural import RandomizedSignature
 from utils import print_name, print_shape
 
 from preprocessing.timeseries_augmentation import normalize_mean_std_traindata, normalize_streams, augment_time, add_basepoint_zero
-from aeon.classification.sklearn import RotationForestClassifier
+from aeon.regression.sklearn import RotationForestRegressor
 from sklearn.metrics import root_mean_squared_error
 
 jax.config.update('jax_platform_name', 'gpu') # Used to set the platform (cpu, gpu, etc.)
@@ -27,6 +27,8 @@ from aeon.datasets import load_regression
 
 from sklearn.linear_model import RidgeCV
 from aeon.transformations.collection.convolution_based import Rocket, MultiRocketMultivariate, MiniRocketMultivariate
+
+trees_n_jobs = -1
 
 def get_aeon_dataset(
         dataset_name:str, 
@@ -48,9 +50,8 @@ def get_aeon_dataset(
     return X_train.transpose(0,2,1), y_train, X_test.transpose(0,2,1), y_test
 
 
-def feed_into_ridge(feat_train_X, feat_test_X, train_y, test_y):
+def train_linear_classifier(t0, t1, feat_train_X, feat_test_X, train_y, test_y, clf=RidgeCV(alphas=np.logspace(-3, 5, 50))):
     # train classifier      
-    clf = RidgeCV(alphas=np.logspace(-3, 3, 20))
     clf.fit(feat_train_X, train_y)
     t2 = time.time()
 
@@ -58,8 +59,9 @@ def feed_into_ridge(feat_train_X, feat_test_X, train_y, test_y):
     pred = clf.predict(feat_test_X)
     test_rmse = root_mean_squared_error(test_y, pred)
     train_rmse = root_mean_squared_error(train_y, clf.predict(feat_train_X))
+    alpha = 0 if not hasattr(clf, 'alpha_') else clf.alpha_
     t3 = time.time()
-    return train_rmse, test_rmse, t2, t3, clf.alpha_
+    return train_rmse, test_rmse, t1-t0, t2-t1, alpha
 
 
 def train_and_test_sigbased(
@@ -86,11 +88,13 @@ def train_and_test_sigbased(
         feat_train_X, feat_test_X = normalize_mean_std_traindata(feat_train_X, feat_test_X)
     t1 = time.time()
 
-    # feed into ridge
-    train_rmse, test_rmse, t2, t3, alpha = feed_into_ridge(
-        feat_train_X, feat_test_X, train_y, test_y)
+    # feed into linear classifier
+    res_ridge = train_linear_classifier(
+        t0, t1, feat_train_X, feat_test_X, train_y, test_y)
+    res_rotforest = train_linear_classifier(
+        t0, t1, feat_train_X, feat_test_X, train_y, test_y, RotationForestRegressor(n_estimators=100, n_jobs=trees_n_jobs))
     
-    return test_rmse, train_rmse, t1-t0, t2-t1, t3-t2, alpha
+    return res_ridge, res_rotforest
 
 
 def train_and_test_ROCKETS(
@@ -109,11 +113,13 @@ def train_and_test_ROCKETS(
     feat_train_X, feat_test_X = normalize_mean_std_traindata(feat_train_X, feat_test_X)
     t1 = time.time()
 
-    # feed into ridge
-    train_rmse, test_rmse, t2, t3, alpha = feed_into_ridge(
-        feat_train_X, feat_test_X, train_y, test_y)
+    # feed into linear classifier
+    res_ridge = train_linear_classifier(
+        t0, t1, feat_train_X, feat_test_X, train_y, test_y)
+    res_rotforest = train_linear_classifier(
+        t0, t1, feat_train_X, feat_test_X, train_y, test_y, RotationForestRegressor(n_estimators=100, n_jobs=trees_n_jobs))
     
-    return test_rmse, train_rmse, t1-t0, t2-t1, t3-t2, alpha
+    return res_ridge, res_rotforest
 
 
 def run_all_experiments(X_train, y_train, X_test, y_test):
@@ -127,24 +133,40 @@ def run_all_experiments(X_train, y_train, X_test, y_test):
         ["Tabular", TabularTimeseriesFeatures(max_batch)],
         ["Sig", SigTransform(trunc_level, max_batch)],
         ["Log Sig", LogSigTransform(trunc_level, max_batch)],
-        ["Sig Vanilla TRP", SigVanillaTensorizedRandProj(
-            prng_key,
-            n_features,
-            trunc_level,
-            max_batch,
-            )],
-        ["Sig RBF TRP", SigRBFTensorizedRandProj(
-            prng_key,
-            n_features,
-            trunc_level,
-            rbf_dimension = 800,
-            max_batch = max_batch,
-            )],
         ["Randomized Signature", RandomizedSignature(
             prng_key,
             n_features,
             max_batch=10,
             )],
+        ["TRP", SigVanillaTensorizedRandProj(
+            prng_key,
+            n_features,
+            trunc_level,
+            max_batch,
+            concat_levels=False,
+            )],
+        ["RBF TRP", SigRBFTensorizedRandProj(
+            prng_key,
+            n_features,
+            trunc_level,
+            rbf_dimension = 800,
+            max_batch = max_batch,
+            concat_levels=False,
+            )],
+        ["concat TRP", SigVanillaTensorizedRandProj(
+            prng_key,
+            n_features // (trunc_level-1),
+            trunc_level,
+            max_batch,
+            )],
+        ["concat RBF TRP", SigRBFTensorizedRandProj(
+            prng_key,
+            n_features // (trunc_level-1),
+            trunc_level,
+            rbf_dimension = 800,
+            max_batch = max_batch,
+            )],
+        
         ]
 
     numpy_seed = 99
@@ -155,36 +177,26 @@ def run_all_experiments(X_train, y_train, X_test, y_test):
         ]
     
     # Run experiments
-    RMSEs_test = []
-    RMSEs_train = []
-    times_trans = []
-    times_fit = []
-    alphas = []
-    model_names = []
+    model_names = [name for (name, _) in jax_models+rocket_models]
+    results_ridge = []
+    results_rotforest = []
     #jax
     for name, model in jax_models:
-        model_names.append(name)
-        test_rmse, train_rmse, t_trans, t_fit, t_pred, alpha = train_and_test_sigbased(
+        res_ridge, res_rotforest = train_and_test_sigbased(
             X_train, y_train, X_test, y_test, model
             )
-        RMSEs_test.append(test_rmse)
-        RMSEs_train.append(train_rmse)
-        times_trans.append(t_trans)
-        times_fit.append(t_fit)
-        alphas.append(alpha)
+        results_ridge.append(res_ridge)
+        results_rotforest.append(res_rotforest)
+        
     #numpy
     for name, model in rocket_models:
-        model_names.append(name)
-        test_rmse, train_rmse, t_trans, t_fit, t_pred, alpha = train_and_test_ROCKETS(
+        res_ridge, res_rotforest = train_and_test_ROCKETS(
             X_train, y_train, X_test, y_test, model
             )
-        RMSEs_test.append(test_rmse)
-        RMSEs_train.append(train_rmse)
-        times_trans.append(t_trans)
-        times_fit.append(t_fit)
-        alphas.append(alpha)
+        results_ridge.append(res_ridge)
+        results_rotforest.append(res_rotforest)
     
-    return model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas
+    return model_names, results_ridge, results_rotforest
 
 
 def do_experiments(datasets: List[str]):
@@ -211,44 +223,34 @@ def do_experiments(datasets: List[str]):
                 "T": T,
                 "D": D,
             }
-            experiments[dataset_name] = results, 
+            experiments[dataset_name] = results
         except Exception as e:
             print(f"Error: {e}")
             failed[dataset_name] = e
         print("Elapsed time", time.time()-t0)
     return experiments, experiments_metadata, failed
 
+
 if __name__ == "__main__":
-    #run experiments
     d_res, d_meta, d_failed = do_experiments(list(tser_soton))
+    
+    # Define the attributes and methods
+    attributes = ["RMSE_train", "RMSE_test", "time_transform", "time_fit", "alpha"]
+    methods = ["ridge", "rotforest"]
 
-    # make dict of results
-    model_names = d_res[list(d_res.keys())[0]][0][0]
-    alpha_names = ["alpha_" + model_name for model_name in model_names]
+    # Create and save DataFrames for each attribute and method
+    for attribute in attributes:
+        for method in methods:
+            df = pd.DataFrame(columns=model_names)
+            for dataset_name, (model_names, results_ridge, results_rotforest) in d_res.items():
+                if method == "ridge":
+                    results = results_ridge
+                elif method == "rotforest":
+                    results = results_rotforest
 
-    df_RMSEs_test = pd.DataFrame({dataset : RMSEs_test for dataset, ((model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas),) in d_res.items()}).transpose()
-    df_RMSEs_test.columns = model_names
-    df_RMSEs_train = pd.DataFrame({dataset : RMSEs_train for dataset, ((model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas),) in d_res.items()}).transpose()
-    df_RMSEs_train.columns = model_names
-    df_trans = pd.DataFrame({dataset : times_trans for dataset, ((model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas),) in d_res.items()}).transpose()
-    df_trans.columns = model_names
-    df_fit = pd.DataFrame({dataset : times_fit for dataset, ((model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas),) in d_res.items()}).transpose()
-    df_fit.columns = model_names
-    df_alphas = pd.DataFrame({dataset : alphas for dataset, ((model_names, RMSEs_test, RMSEs_train, times_trans, times_fit, alphas),) in d_res.items()}).transpose()
-    df_alphas.columns = alpha_names
+                values = [res[attributes.index(attribute)] for res in results]
+                df.loc[dataset_name] = values
 
-    meta = pd.DataFrame(d_meta).transpose()
-
-    df_RMSEs_test = pd.concat([meta, df_RMSEs_test], axis=1)
-    df_RMSEs_train = pd.concat([meta, df_RMSEs_train], axis=1)
-    df_trans = pd.concat([meta, df_trans], axis=1)
-    df_fit = pd.concat([meta, df_fit], axis=1)
-    df_alphas = pd.concat([meta, df_alphas], axis=1)
-
-    # save
-    df_RMSEs_test.to_pickle("df_RMSEs_test_TSER.pkl")
-    df_RMSEs_train.to_pickle("df_RMSEs_train_TSER.pkl")
-    df_trans.to_pickle("df_trans_TSER.pkl")
-    df_fit.to_pickle("df_fit_TSER.pkl")
-    df_alphas.to_pickle("df_alphas_TSER.pkl")
-    print(d_failed)
+            # Save the DataFrame
+            print(df)
+            df.to_pickle(f"TESR_{attribute}_{method}_results.pkl")
