@@ -45,14 +45,15 @@ def linear_tensorised_random_projection_features(
         Float[Array, "trunc_level  n_features"]: 
             Feature vector of the time series.
     """
-    D = P.shape[-1]
-    Xdiff = jnp.diff(X, axis=0) / D**0.5 # shape (T-1, D)
+    trunc_level, n_features, D = P.shape
+    Xdiff = jnp.diff(X, axis=0) # shape (T-1, D)
     P_dot_Xdiff = jnp.dot(P, Xdiff.T) # shape (trunc_level, n_features, T-1)
-    carry, V = lax.scan(inner_sig_TRP_linear, P_dot_Xdiff[0], P_dot_Xdiff[1:])
+    P_dot_Xdiff0 = P_dot_Xdiff[0] / n_features**0.5 # shape (n_features, T-1)
+    carry, V = lax.scan(inner_sig_TRP_linear, P_dot_Xdiff0, P_dot_Xdiff[1:])
 
     #concatenate first level with the rest
     return jnp.concatenate(
-        [jnp.sum(P_dot_Xdiff[0:1], axis=-1), V],
+        [jnp.sum(P_dot_Xdiff0[None], axis=-1), V],
         axis=0
         )
          
@@ -97,21 +98,20 @@ class SigVanillaTensorizedRandProj(TimeseriesFeatureTransformer):
             X (Float[Array, "N  T  D"]): Example batched time series data.
         """
         # Get shape, dtype and device info.
-        d = X.shape[-1]
+        D = X.shape[-1]
         dtype = X.dtype
         
         #initialize the tensorized projection matrix for each truncation level
         self.P = jax.random.normal(
             self.seed, 
-            (self.trunc_level, self.n_features, d),
+            (self.trunc_level, self.n_features, D),
             dtype=dtype
         )
-        # self.P /= np.sqrt(self.n_features)
 
         #vmap the transform
         if self.concat_levels:
             self.vmapped_transform = jax.vmap(
-                lambda x: jnp.concat(linear_tensorised_random_projection_features(x, self.P)[1:], axis=-1),
+                lambda x: jnp.concat(linear_tensorised_random_projection_features(x, self.P)[0:], axis=-1),
             )
         else:
             self.vmapped_transform = jax.vmap(

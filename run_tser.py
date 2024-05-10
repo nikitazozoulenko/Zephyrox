@@ -8,6 +8,7 @@ import jax.lax as lax
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 import aeon
 import pandas as pd
+from tqdm import tqdm
 
 from features.sig_trp import SigVanillaTensorizedRandProj, SigRBFTensorizedRandProj
 from features.sig import SigTransform, LogSigTransform
@@ -203,7 +204,7 @@ def do_experiments(datasets: List[str]):
     experiments = {}
     experiments_metadata = {}
     failed = {}
-    for dataset_name in datasets:
+    for dataset_name in tqdm(datasets):
         t0 = time.time()
         try:
             print(dataset_name)
