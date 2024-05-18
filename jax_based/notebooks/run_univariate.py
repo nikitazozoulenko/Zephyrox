@@ -13,7 +13,7 @@ from features.sig_trp import SigVanillaTensorizedRandProj, SigRBFTensorizedRandP
 from features.sig import SigTransform, LogSigTransform
 from features.base import TimeseriesFeatureTransformer, TabularTimeseriesFeatures, RandomGuesser
 from features.sig_neural import RandomizedSignature
-from utils import print_name, print_shape
+from utils.utils import print_name, print_shape
 
 from preprocessing.timeseries_augmentation import normalize_mean_std_traindata, normalize_streams, augment_time, add_basepoint_zero
 from aeon.classification.sklearn import RotationForestClassifier

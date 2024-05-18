@@ -14,7 +14,7 @@ from features.sig_trp import SigVanillaTensorizedRandProj, SigRBFTensorizedRandP
 from features.sig import SigTransform, LogSigTransform
 from features.base import TimeseriesFeatureTransformer, TabularTimeseriesFeatures, RandomGuesser
 from features.sig_neural import RandomizedSignature
-from utils import print_name, print_shape
+# from utils.utils import print_name, print_shape
 
 from preprocessing.timeseries_augmentation import normalize_mean_std_traindata, normalize_streams, augment_time, add_basepoint_zero
 from aeon.regression.sklearn import RotationForestRegressor
@@ -215,6 +215,8 @@ def do_experiments(datasets: List[str]):
             N_test = X_test.shape[0]
             T = X_train.shape[1]
             D = X_train.shape[2]
+            if N_train > 2000 or D > 20:
+                continue
             results = run_all_experiments(
                 X_train, y_train, X_test, y_test
                 )
@@ -238,6 +240,9 @@ if __name__ == "__main__":
     # Define the attributes and methods
     attributes = ["RMSE_train", "RMSE_test", "time_transform", "time_fit", "alpha"]
     methods = ["ridge", "rotforest"]
+    
+    # Extract model_names from d_res
+    model_names = next(iter(d_res.values()))[0]
 
     # Create and save DataFrames for each attribute and method
     for attribute in attributes:
