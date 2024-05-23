@@ -75,7 +75,7 @@ class RocketFeatures(nn.Module):
             for out, conv in zip(out_per_conv, self.convs):
                 #out: (N, n_kernels_per_dilation, T)
                 n_ker_per_dil = out.shape[1]
-                quantiles = 0.8 * torch.rand(n_ker_per_dil) + 0.1
+                quantiles = 0.8 * torch.rand(n_ker_per_dil, device=X.device) + 0.1
                 q = torch.quantile(out.permute(0,2,1).reshape(-1, n_ker_per_dil), quantiles, dim=0)
                 conv.bias.data = torch.diag(q)
 
