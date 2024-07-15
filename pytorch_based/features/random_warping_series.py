@@ -1,14 +1,15 @@
 from typing import List, Dict, Set, Any, Optional, Tuple, Literal, Callable
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import numpy as np
 import torch
 from torch import Tensor
 
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from kernels.abstract_base import StaticKernel
 from kernels.static_kernels import LinearKernel
+from base import TimeseriesFeatureExtractor
 
 
 ############################################  |
@@ -22,8 +23,7 @@ def dtw_update_antidiag(
         s:int,
         t:int,
     ):
-    """
-    Used in 'DP_dynamic_time_warping' to update the antidiagonals
+    """Used in 'DP_dynamic_time_warping' to update the antidiagonals
     asynchroneously. Note that s,t>0"""
     M00 = M[..., s-1, t-1]
     M01 = M[..., s-1, t  ]
@@ -37,8 +37,7 @@ def dtw_update_antidiag(
 def DP_dynamic_time_warping(
         M: Tensor,
     ):
-    """
-    Dynamic programming for the computation of the DTW similarity.
+    """Dynamic programming for the computation of the DTW similarity.
 
     Args:
         M (Tensor): Tensor of shape (..., T, T2).
@@ -66,9 +65,8 @@ def DP_dynamic_time_warping(
 ############################################ \|/
 
 
-class RandomWarpingSeries():
-    """
-    Random Warping Series (RWS) algorithm 1 from 
+class RandomWarpingSeries(TimeseriesFeatureExtractor):
+    """Random Warping Series (RWS) algorithm 1 from 
     https://proceedings.mlr.press/v84/wu18b/wu18b.pdf.
     The RWS feature map is the Dynamic Time Warping (DTW) 
     distance to 'n_features' random series of random length D.
@@ -81,9 +79,9 @@ class RandomWarpingSeries():
             D_max:int = 50,
             sigma:float = 1.0,
             local_kernel:StaticKernel = LinearKernel(),
+            max_batch:int = 1000,
         ):
-        """
-        The RWS feature map is the Dynamic Time Warping (DTW) 
+        """The RWS feature map is the Dynamic Time Warping (DTW) 
         distance to 'n_features' random series of random length D.
 
         Args:
@@ -92,16 +90,18 @@ class RandomWarpingSeries():
             D_min (int): Minimum length of random series.
             D_max (int): Maximum length of random series.
             sigma (float): Volatility of the Brownian Motions.
+            local_kernel (StaticKernel): Kernel for local distance.
+            max_batch (int): Maximum batch size for computations
         """
+        super().__init__(max_batch)
         self.n_features = n_features
         self.D_min = D_min
         self.D_max = D_max
         self.sigma = sigma
-        self.has_initialized = False
         self.local_kernel = local_kernel
     
     
-    def _init_series(
+    def fit(
             self, 
             X:Tensor,
         ):
@@ -116,7 +116,7 @@ class RandomWarpingSeries():
         r'th series.
 
         Args:
-            X (Tensor): Example input tensor of shape (..., T, d) of 
+            X (Tensor): Example input tensor of shape (N, T, d) of 
                 timeseries.
         """
         # Get shape, dtype and device info.
@@ -136,12 +136,11 @@ class RandomWarpingSeries():
 
 
 
-    def __call__(
+    def _batched_transform(
             self,
             X: Tensor,
         ):
-        """
-        Returns the Random Warping Series feature map of the input.
+        """Returns the Random Warping Series feature map of the input.
         O(N * T * n_features * D * d) time complexity,
         O(N * T * n_features * D)     space complexity.
 
@@ -151,11 +150,6 @@ class RandomWarpingSeries():
         Returns:
             Tensor: Tensor of shape (N, n_features) of RWS similarities.
         """
-        # init
-        if not self.has_initialized:
-            self._init_series(X)
-            self.has_initialized = True
-
         # calculate distance of pairs |X_s^i - S_t^j|^2
         dists = torch.sqrt(self.local_kernel.time_square_dist(X, self.series))
         return DP_dynamic_time_warping(dists) / np.sqrt(self.n_features)

@@ -5,12 +5,7 @@ from torch.nn.functional import relu
 from torch.nn.functional import tanh
 import numpy as np
 
-import os
-import sys
-
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from kernels.abstract_base import TimeSeriesKernel, StaticKernel
-from kernels.static_kernels import RBFKernel
+from base import TimeseriesFeatureExtractor
 
 
 @torch.jit.script
@@ -74,14 +69,15 @@ def randomized_sig_linear(
     return Y
 
 
-
-class RandomizedSignature():
+class RandomizedSignature(TimeseriesFeatureExtractor):
     def __init__(
             self,
-            n_features: int, #TRP dimension and RBF RFF dimension/2
+            n_features: int,
             activation:Literal["tanh", "linear"] = "linear",
             seed:Optional[int] = None,
+            max_batch: int = 512,
         ):
+        super().__init__(max_batch)
         self.n_features = n_features
         self.activation = activation
         self.seed = seed
@@ -128,12 +124,11 @@ class RandomizedSignature():
         return self
 
             
-    def transform(
+    def _batched_transform(
             self,
             X:Tensor,
         ):
-        """
-        Computes the RBF TRP-RFSF features for the given input tensor,
+        """Computes the RBF TRP-RFSF features for the given input tensor,
         mapping time series from (T,d) to (n_features).
 
         Args:

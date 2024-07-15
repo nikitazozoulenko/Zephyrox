@@ -2,17 +2,16 @@ from typing import List, Dict, Set, Any, Optional, Tuple, Literal, Callable
 import torch
 from torch import Tensor
 import signatory
-
 from sklearn.base import TransformerMixin, BaseEstimator
 
+from base import TimeseriesFeatureExtractor
 
 
 def sig(
     X: Tensor,
     trunc_level: int,
 ):
-    """
-    Computes the truncated signature of time series of
+    """Computes the truncated signature of time series of
     shape (T,d) with optional batch support.
     
     Args:
@@ -26,7 +25,7 @@ def sig(
     """
     if len(X.shape) == 2:
         X = X.unsqueeze(0)
-    return signatory.signature(X, trunc_level).squeeze(0)
+    return signatory.signature(X, trunc_level)
 
 
 
@@ -34,8 +33,7 @@ def logsig(
     X: Tensor,
     trunc_level: int,
 ):
-    """
-    Computes the truncated log-signature of time series of
+    """Computes the truncated log-signature of time series of
     shape (T,d) with optional batch support.
     
     Args:
@@ -49,22 +47,23 @@ def logsig(
     """
     if len(X.shape) == 2:
         X = X.unsqueeze(0)
-    return signatory.logsignature(X, trunc_level).squeeze(0)
+    return signatory.logsignature(X, trunc_level)
 
 
 
-class SigTransform(TransformerMixin, BaseEstimator):
+class SigTransform(TimeseriesFeatureExtractor):
     def __init__(
             self,
-            trunc_level: int = 3, #signature truncation level
+            trunc_level: int = 3,
+            max_batch: int = 512,
         ):
-        """
-        Summary
-
+        """Initializes the SigTransform object.
+        
         Args:
-            n_features (int): _description_. Defaults to 500.
-            trunc_level (int): _description_. Defaults to 3.
+            trunc_level (int): Signature truncation level. Defaults to 3.
+            max_batch (int): Maximum batch size for computations.
         """
+        super.__init__(max_batch)
         self.trunc_level = trunc_level
 
 
@@ -72,7 +71,7 @@ class SigTransform(TransformerMixin, BaseEstimator):
         return self
 
 
-    def transform(
+    def _batched_transform(
             self,
             X:Tensor,
         ):
@@ -80,18 +79,19 @@ class SigTransform(TransformerMixin, BaseEstimator):
 
 
 
-class LogSigTransform(TransformerMixin, BaseEstimator):
+class LogSigTransform(TimeseriesFeatureExtractor):
     def __init__(
             self,
-            trunc_level: int = 3, #signature truncation level
+            trunc_level: int = 3,
+            max_batch: int = 512,
         ):
-        """
-        Summary
-
+        """Initializes the LogSigTransform object.
+        
         Args:
-            n_features (int): _description_. Defaults to 500.
-            trunc_level (int): _description_. Defaults to 3.
+            trunc_level (int): Signature truncation level. Defaults to 3.
+            max_batch (int): Maximum batch size for computations.
         """
+        super.__init__(max_batch)
         self.trunc_level = trunc_level
 
 
@@ -99,7 +99,7 @@ class LogSigTransform(TransformerMixin, BaseEstimator):
         return self
 
 
-    def transform(
+    def _batched_transform(
             self,
             X:Tensor,
         ):

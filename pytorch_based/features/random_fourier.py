@@ -3,13 +3,16 @@ import numpy as np
 import torch
 from torch import Tensor
 
-class RBF_RandomFourierFeatures:
+from base import TimeseriesFeatureExtractor
+
+class RBF_RandomFourierFeatures(TimeseriesFeatureExtractor):
     def __init__(
             self, 
-            sigma : float = 1.0,
-            n_features : int = 1000,
-            seed : Optional[int] = None,
-            method : Literal["cos(x)sin(x)", "cos(x + b)"] = "cos(x)sin(x)"
+            sigma: float = 1.0,
+            n_features: int = 1000,
+            seed: Optional[int] = None,
+            method: Literal["cos(x)sin(x)", "cos(x + b)"] = "cos(x)sin(x)",
+            max_batch: int = 10000,
         ):
         """
         Random Fourier Features (RFF) for the RBF kernel. The RBF kernel is defined 
@@ -26,6 +29,7 @@ class RBF_RandomFourierFeatures:
             method (Literal["cos(x)sin(x)", "cos(x + b)"], optional): Method for 
                 generating the RFF map. Defaults to "cos(x)sin(x)".
         """
+        super().__init__(max_batch)
         self.n_features = n_features
         self.seed = seed
         self.sigma = sigma
@@ -33,7 +37,7 @@ class RBF_RandomFourierFeatures:
         self.has_initialized = False
     
 
-    def _init_given_input(
+    def fit(
             self, 
             X: Tensor
         ):
@@ -42,7 +46,7 @@ class RBF_RandomFourierFeatures:
         The weights are drawn from a N(0, 1/sigma^2) distribution.
 
         Args:
-            X (Tensor): Input tensor of shape (..., d)
+            X (Tensor): Input tensor of shape (N, d)
         """
         d = X.shape[-1]
         device = X.device
@@ -65,24 +69,20 @@ class RBF_RandomFourierFeatures:
                                                 dtype=dtype)
 
 
-    def __call__(
+    def _batched_transform(
             self, 
             X: Tensor
         ) -> Tensor:
         """
         Maps the input bbR^d to the feature space R^(2*n_features) 
-        or R^(n_features), depending on self.method. The random weights 
-        will be initialized the first time __call__ is called.
+        or R^(n_features), depending on self.method.
 
         Args:
-            X (Tensor): Input tensor of shape (..., d)
+            X (Tensor): Input tensor of shape (N, d)
 
         Returns:
-            Tensor: Transformed tensor of shape (..., D)
+            Tensor: Transformed tensor of shape (N, D)
         """
-        if not self.has_initialized:
-            self._init_given_input(X)
-            self.has_initialized = True
         # X: (..., d)
         # weights: (d, D)
         # biases: (D,)
