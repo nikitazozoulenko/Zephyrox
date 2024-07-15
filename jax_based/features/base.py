@@ -72,9 +72,9 @@ class TimeseriesFeatureTransformer(ABC, TransformerMixin, BaseEstimator):
         return trans_chunked(X)
     
 
-###########################################  |
-########### Tabular Transformer ###########  |
-########################################### \|/
+########################################  |
+########### Tabular Features ###########  |
+######################################## \|/
 
 
 class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
@@ -84,7 +84,7 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
             epsilon: float = 0.00001,
         ):
         """
-        Transformer class for normalizing tabular time series data.
+        Flattens time series to a big vector in R^Td.
 
         Args:
             max_batch (int): Maximum batch size for computations.
@@ -95,13 +95,6 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
 
 
     def fit(self, X: Float[Array, "N  T  D"]):
-        """
-        Fit the transformer to the training data. Computes the mean
-        and standard deviation of the training data.
-
-        Args:
-            X (Float[Array, "N  T  D"]): Batched time series data.
-        """
         self.mean = X.mean(axis=0, keepdims=True)
         self.std = X.std(axis=0, keepdims=True)
 
@@ -110,16 +103,6 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
         self, 
         X: Float[Array, "N  T  D"],
     ) -> Float[Array, "N  T*D"]:
-        """
-        Normalize the input time series data across axis=0 using the mean
-        and standard deviation.
-
-        Args:
-            X (Float[Array, "N  T  D"]): Batched time series data.
-
-        Returns:
-            (Float[Array, "N  T*D"]): The normalized time series data.
-        """
         N, T, D = X.shape
         X = (X - self.mean) / (self.std + self.epsilon)
         return X.reshape(N, -1)
