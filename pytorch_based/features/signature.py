@@ -63,7 +63,7 @@ class SigTransform(TimeseriesFeatureExtractor):
             trunc_level (int): Signature truncation level. Defaults to 3.
             max_batch (int): Maximum batch size for computations.
         """
-        super.__init__(max_batch)
+        super().__init__(max_batch)
         self.trunc_level = trunc_level
 
 
@@ -91,7 +91,7 @@ class LogSigTransform(TimeseriesFeatureExtractor):
             trunc_level (int): Signature truncation level. Defaults to 3.
             max_batch (int): Maximum batch size for computations.
         """
-        super.__init__(max_batch)
+        super().__init__(max_batch)
         self.trunc_level = trunc_level
 
 

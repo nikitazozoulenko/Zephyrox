@@ -114,7 +114,7 @@ class RandomGuesser(TimeseriesFeatureExtractor):
         super().__init__(max_batch)
         self.seed = seed
         self.n_features = n_features
-        self.gen = torch.Generator(seed=self.seed)
+        self.gen = torch.Generator().manual_seed(seed)
         
 
     def fit(self, X, y=None):

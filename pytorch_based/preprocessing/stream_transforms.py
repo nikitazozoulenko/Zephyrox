@@ -11,7 +11,26 @@ def assert_ndim_geq(X:Tensor, ndim:int):
 
 
 
-def z_score_normalize(
+def normalize_mean_std(
+        X: Tensor,
+        epsilon: float = 0.00001,
+    ):
+    """Normalize 'X' across axis=0 using mean and std.
+
+    Args:
+        X (Tensor): Tensor of shape (N, ...).
+        epsilon (float): Small value to avoid division by zero.
+
+    Returns:
+        'X' normalized by the mean and std.
+    """
+    mean = X.mean(axis=0, keepdims=True)
+    std = X.std(axis=0, keepdims=True)
+    return (X - mean) / (std+epsilon)
+
+
+
+def normalize_mean_std_traindata(
         train:Tensor,
         test:Tensor,
         epsilon:float = 0.0001,
@@ -221,7 +240,7 @@ def normalize_streams(train:Tensor,
         test = avg_pool_time(test, pool_size)
 
     # Normalize data by training set mean and std
-    train, test = z_score_normalize(train, test)
+    train, test = normalize_mean_std_traindata(train, test)
 
     # clip to avoid numerical instability
     c = 5.0
