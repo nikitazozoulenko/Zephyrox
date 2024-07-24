@@ -190,7 +190,8 @@ class SigTensorisedRandProj(TimeseriesFeatureExtractor):
         if self.only_last:
             return features[-1]
         else:
-            return torch.cat(features[1:], dim=-1)
+            trunc_level, N, D = features.shape
+            return features[1:].permute(1,2,0).reshape(N, -1)
 
 
 # class TRP_RFSF_Gaussian():

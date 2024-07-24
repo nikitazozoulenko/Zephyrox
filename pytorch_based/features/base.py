@@ -54,7 +54,7 @@ class TimeseriesFeatureExtractor(ABC, TransformerMixin, BaseEstimator):
         Returns:
             (Tensor): Feature vectors of shape (N, ...)
         """
-        split_X = torch.split(X, 2, dim=0)
+        split_X = torch.split(X, self.max_batch, dim=0)
         return torch.cat(
             [self._batched_transform(x) for x in split_X],
             axis=0
@@ -112,9 +112,7 @@ class RandomGuesser(TimeseriesFeatureExtractor):
             max_batch (int): Maximum batch size for computations.
         """
         super().__init__(max_batch)
-        self.seed = seed
         self.n_features = n_features
-        self.gen = torch.Generator().manual_seed(seed)
         
 
     def fit(self, X, y=None):
@@ -127,5 +125,4 @@ class RandomGuesser(TimeseriesFeatureExtractor):
                         self.n_features,
                         device=X.device,
                         dtype=X.dtype,
-                        generator=self.gen
                         )
