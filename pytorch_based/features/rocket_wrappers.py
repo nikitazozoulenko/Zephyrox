@@ -20,8 +20,9 @@ class AbstractRocketWrapper(TimeseriesFeatureExtractor):
         self.rocket = rocket
 
 
-    def fit(self, X: Tensor): #shape (N, T, D)
+    def fit(self, X: Tensor, y=None): #shape (N, T, D)
         self.rocket.fit(X.cpu().numpy().transpose(0,2,1))
+        return self
 
 
     def _batched_transform(self, X: Tensor) -> Tensor: # shape (N, T, D)
@@ -51,7 +52,7 @@ class MiniRocketWrapper(AbstractRocketWrapper):
             max_batch: int = 10000,
         ):
         super().__init__(
-            MultiRocket(max(4, n_features//4)), 
+            MiniRocket(max(4, n_features)), 
             max_batch
             )
 
