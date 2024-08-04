@@ -30,7 +30,7 @@ def four_multirocket_pooling(X: Tensor) -> Tensor:
     #mipv (mean of indices of positive values)
     ones = torch.ones_like(X)
     arange = torch.cumsum(ones, dim=-1)
-    mipv = torch.mean(arange*pos, dim=-1) /T
+    mipv = torch.mean(arange*pos, dim=-1) / T
 
     #lspv (longest stretch of positive values)
     X_pad = F.pad(X, (0,1), "constant", 0)
@@ -39,7 +39,7 @@ def four_multirocket_pooling(X: Tensor) -> Tensor:
     cumsum = torch.cumsum(pos[..., :-1], dim=-1)
     te = t*cumsum
     te_cummax = torch.cummax(te, axis=-1).values
-    lspv = torch.max(te_cummax.diff(axis=-1), axis=-1).values /T
+    lspv = torch.max(te_cummax.diff(axis=-1), axis=-1).values / T
 
     return torch.concat([ppv, mpv, mipv, lspv], dim=-1)
 
