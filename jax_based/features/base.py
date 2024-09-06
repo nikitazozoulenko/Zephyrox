@@ -27,7 +27,7 @@ class TimeseriesFeatureTransformer(ABC, TransformerMixin, BaseEstimator):
 
 
     @abstractmethod
-    def fit(self, X: Float[Array, "N  T  D"]):
+    def fit(self, X: Float[Array, "N  T  D"], y=None):
         """
         Fit the transformer to the training data.
 
