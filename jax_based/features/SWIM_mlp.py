@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from features.base import TimeseriesFeatureTransformer
 
 
+
 def init_single_SWIM_layer(
         X: Float[Array, "N  d"],
         y: Float[Array, "N  D"],
@@ -67,8 +68,8 @@ def forward_SWIM(
         X: Float[Array, "N  d"],
         weights: Float[Array, "d  n_features"],
         biases: Float[Array, "1  n_features"],
+        add_residual: bool,
         activation = lambda x : jnp.maximum(0,x+0.5), # jnp.tanh,
-        #activation = jnp.tanh,
     ) -> Float[Array, "N  n_features"]:
     """
     Forward pass for a single layer of the SWIM model.
@@ -77,33 +78,17 @@ def forward_SWIM(
         X (Float[Array, "N  d"]): Input to the layer.
         weights (Float[Array, "d  n_features"]): Weights for the layer.
         biases (Float[Array, "1  n_features"]): Biases for the layer.
+        add_residual (bool): Whether to use residual connections.
         activation (Callable): Activation function for the layer.
     Returns:
         Output of the layer of shape (N, n_features).
     """
-    return activation(X @ weights + biases)
-
-
-
-def SWIM_init_layer_and_forward(
-        X: Float[Array, "N  d"],
-        y: Float[Array, "N  D"],
-        n_features: int,
-        seed: PRNGKeyArray,
-    ) -> Tuple[Float[Array, "d  n_features"], Float[Array, "1  n_features"], Float[Array, "N  n_features"]]:
-    """
-    Fits the weights for a single layer of the SWIM model.
-
-    Args:
-        X (Float[Array, "N  d"]): First layer input.
-        n_features (int): Hidden layer size.
-        seed (PRNGKeyArray): Random seed for the weights and biases.
-    Returns:
-        Weights (d, n_features), biases (1, n_features), and output of the layer (N, n_features).
-    """
-    weights, biases = init_single_SWIM_layer(X, y, n_features, seed)
-    # carry is (X, seed), y is (N, n_features)
-    return (forward_SWIM(X, weights, biases), y), (weights, biases)
+    d, D = weights.shape
+    X1 = activation(X @ weights + biases)
+    if add_residual and d==D:
+        return X1 + X
+    else:
+        return X1
 
 
 
@@ -112,6 +97,7 @@ def SWIM_all_layers(
         y: Float[Array, "N  D"],
         n_features: int,
         n_layers: int,
+        add_residual: bool,
         seed: PRNGKeyArray,
     ):
     """
@@ -119,17 +105,24 @@ def SWIM_all_layers(
 
     Args:
         X0 (Float[Array, "N  d"]): First layer input.
+        y (Float[Array, "N  p"]): Target training data.
         n_features (int): Hidden layer size.
         n_layers (int): Number of layers in the network.
+        add_residual (bool): Whether to use residual connections.
         seed (PRNGKeyArray): Random seed for the weights and biases.
     Returns:
         Weights (d, n_features) and biases (1, n_features) for the next layer.
     """
 
+    def scan_body(carry, seed): # (carry, x) -> (carry, y)
+        X, y = carry
+        w, b = init_single_SWIM_layer(X, y, n_features, seed)
+        return (forward_SWIM(X, w, b, add_residual), y), (w, b)
+
     init_carry = (X0, y)
     # carry is (X, seed)
     carry, WaB = lax.scan(
-        lambda carry, seed: SWIM_init_layer_and_forward(carry[0], carry[1], n_features, seed),
+        scan_body,
         init_carry,
         xs=jax.random.split(seed, n_layers),
     )
@@ -137,8 +130,17 @@ def SWIM_all_layers(
 
 
 
-@partial(jax.jit, static_argnums=(5))
-def all_forward(X, w1, b1, weights, biases, n_layers):
+def all_forward(
+        X: Float[Array, "N  d"], 
+        w1: Float[Array, "d  D"],
+        b1: Float[Array, "1  D"], 
+        weights: Float[Array, "n_layers-1  d  D"],
+        biases: Float[Array, "n_layers-1  1  D"], 
+        n_layers:int,
+        add_residual: bool,
+        activation = lambda x : jnp.maximum(0,x+0.5), # jnp.tanh,
+        #activation = jnp.tanh,
+    ):
     """
     Forward pass for the SWIM model.
 
@@ -146,23 +148,27 @@ def all_forward(X, w1, b1, weights, biases, n_layers):
         X (Float[Array, "N  d"]): Input to the model.
         w1 (Float[Array, "d  D"]): Weights for the first layer.
         b1 (Float[Array, "1  D"]): Biases for the first layer.
-        weights (List[Float[Array, "n_layers-1  d  D"]]): Weights for the remaining layers.
-        biases (List[Float[Array, "n_layers-1  1  D"]]): Biases for the remaining layers.
+        weights (Float[Array, "n_layers-1  d  D"]): Weights for the remaining layers.
+        biases (Float[Array, "n_layers-1  1  D"]): Biases for the remaining layers.
         n_layers (int): Number of layers in the network.
+        add_residual (bool): Whether to use residual connections
+        activation (Callable): Activation function for the network.
     Returns:
         Output of the model of shape (N, D).
     """
-    X = forward_SWIM(X, w1, b1)
+    #First hidden layer
+    X = forward_SWIM(X, w1, b1, add_residual, activation)
     if n_layers == 1:
         return X
-    
-    def scan_body(carry, layer_idx):
-        X = carry
-        w, b = weights[layer_idx], biases[layer_idx]
-        return forward_SWIM(X, w, b), None
+    #subsequent layers in a scan loop
+    else:
+        def scan_body(carry, layer_idx):
+            X = carry
+            w, b = weights[layer_idx], biases[layer_idx]
+            return forward_SWIM(X, w, b, add_residual, activation), None
 
-    X, _ = lax.scan(scan_body, X, xs=None, length=n_layers-1)
-    return X
+        X, _ = lax.scan(scan_body, X, xs=jnp.arange(n_layers-1))
+        return X
 
 
 
@@ -171,7 +177,8 @@ class SWIM_MLP(TimeseriesFeatureTransformer):
             self,
             seed: PRNGKeyArray,
             n_features: int = 512,
-            n_layers: int = 2,
+            n_layers: int = 3,
+            add_residual: bool = False,
             max_batch: int = 512,
         ):
         """Implementation of the original paper's SWIM model.
@@ -181,12 +188,14 @@ class SWIM_MLP(TimeseriesFeatureTransformer):
             seed (PRNGKeyArray): Random seed for matrices, biases, initial value.
             n_features (int): Hidden layer dimension.
             n_layers (int): Number of layers in the network.
+            add_residual (bool): Whether to use residual connections.
             max_batch (int): Max batch size for computations.
         """
         super().__init__(max_batch)
         self.n_features = n_features
         self.n_layers = n_layers
         self.seed = seed
+        self.add_residual = add_residual
         self.w1 = None
         self.b1 = None
         self.weights = None
@@ -209,15 +218,16 @@ class SWIM_MLP(TimeseriesFeatureTransformer):
         N, D = X.shape
         seed1, seedrest = jax.random.split(self.seed, 2)
 
-        #first do first layer, which cannot be done in a scan loop
-        (X, y), (self.w1, self.b1) = SWIM_init_layer_and_forward(
+        #first do first layer, which cannot always be done in a scan loop
+        self.w1, self.b1 = init_single_SWIM_layer(
             X, y, self.n_features, seed1
             )
+        X = forward_SWIM(X, self.w1, self.b1, self.add_residual)
         
         #rest of the layers
         if self.n_layers > 1:
             self.weights, self.biases = SWIM_all_layers(
-                X, y, self.n_features, self.n_layers-1, seedrest
+                X, y, self.n_features, self.n_layers-1, self.add_residual, seedrest
                 )
 
         return self
@@ -227,4 +237,7 @@ class SWIM_MLP(TimeseriesFeatureTransformer):
             self,
             X: Float[Array, "N  T  D"],
         ) -> Float[Array, "N  n_features"]:
-        return all_forward(X, self.w1, self.b1, self.weights, self.biases, self.n_layers)
+
+        return all_forward(
+            X, self.w1, self.b1, self.weights, self.biases, self.n_layers, self.add_residual
+            )
