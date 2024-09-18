@@ -162,9 +162,9 @@ def all_forward(
         return X
     #subsequent layers in a scan loop
     else:
-        def scan_body(carry, layer_idx):
+        def scan_body(carry, t):
             X = carry
-            w, b = weights[layer_idx], biases[layer_idx]
+            w, b = weights[t], biases[t]
             return forward_SWIM(X, w, b, add_residual, activation), None
 
         X, _ = lax.scan(scan_body, X, xs=jnp.arange(n_layers-1))
@@ -181,8 +181,9 @@ class SWIM_MLP(TimeseriesFeatureTransformer):
             add_residual: bool = False,
             max_batch: int = 512,
         ):
-        """Implementation of the original paper's SWIM model.
-        https://gitlab.com/felix.dietrich/swimnetworks-paper/
+        """Implementation of the original paper's SWIM model
+        https://gitlab.com/felix.dietrich/swimnetworks-paper/,
+        but with support for residual connections.
 
         Args:
             seed (PRNGKeyArray): Random seed for matrices, biases, initial value.

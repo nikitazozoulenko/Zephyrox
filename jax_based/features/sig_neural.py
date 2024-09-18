@@ -10,7 +10,8 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from features.base import TimeseriesFeatureTransformer
 
 
-def innerscan_randomized_signature(
+@jax.jit
+def scanbody_randomized_signature(
         Z: Float[Array, "n_features"],
         diff: Float[Array, "D"],
         A: Float[Array, "n_features  n_features  D"],
@@ -26,10 +27,11 @@ def innerscan_randomized_signature(
         A (Float[Array, "n_features  n_features  D"]): Random matrix.
         b (Float[Array, "n_features  D"]): Random bias.
     """
+    Z_0 = Z
     Z = jnp.dot(Z, A) + b
     Z = activation(Z) * diff[None, :]
-    Z = Z.sum(axis=-1)
-    return Z, None
+    Z = Z.mean(axis=-1)
+    return Z+Z_0, None
 
 
 def randomized_signature(
@@ -50,7 +52,7 @@ def randomized_signature(
     """
     diffs = jnp.diff(X, axis=0) # shape (T-1, D)
     carry, _ = lax.scan(
-        lambda carry, diff: innerscan_randomized_signature(carry, diff, A, b),
+        lambda carry, diff: scanbody_randomized_signature(carry, diff, A, b),
         Z_0,
         diffs
     )
@@ -96,7 +98,7 @@ class RandomizedSignature(TimeseriesFeatureTransformer):
             (self.n_features, self.n_features, D),
             dtype=dtype
         )
-        self.A /= np.sqrt(1)
+        self.A /= np.sqrt(self.n_features)
 
         # Initialize the random biases
         self.b = jax.random.normal(
@@ -115,6 +117,117 @@ class RandomizedSignature(TimeseriesFeatureTransformer):
         #vmap the transform
         self.vmapped_transform = jax.vmap(
             lambda x: randomized_signature(x, self.A, self.b, self.Z0),
+        )
+
+        return self
+
+
+    def _batched_transform(
+            self,
+            X: Float[Array, "N  T  D"],
+        ) -> Float[Array, "N  n_features"]:
+        return self.vmapped_transform(X)
+    
+
+
+
+
+##############################
+##### time in-homogenous #####
+##############################
+
+
+
+
+@jax.jit
+def time_inhomogenous_randomized_signature(
+        X: Float[Array, "T  D"],
+        A: Float[Array, "n_features  n_features  D"],
+        b: Float[Array, "n_features  D"],
+        Z_0: Float[Array, "n_features"],
+    ) -> Float[Array, "n_features"]:
+    """
+    Randomized signature of a single time series X, with tanh
+    activation function.
+
+    Args:
+        X (Float[Array, "T  D"]): Input tensor of shape (T, d).
+        A (Float[Array, "n_features  n_features  D"]): Random matrix.
+        b (Float[Array, "n_features  D"]): Random bias.
+        Z_0 (Float[Array, "n_features"]): Initial value of the randomized signature.
+    """
+    diffs = jnp.diff(X, axis=0) # shape (T-1, D)
+
+    def scan_body(carry, x):
+        Tdiff, TA, Tb = x
+        return scanbody_randomized_signature(carry, Tdiff, TA, Tb)
+    
+    carry, _ = lax.scan(
+        scan_body,
+        Z_0,
+        xs = (diffs, A, b)
+    )
+    return carry
+
+
+class TimeInhomogenousRandomizedSignature(TimeseriesFeatureTransformer):
+    def __init__(
+            self,
+            seed: PRNGKeyArray,
+            n_features: int = 512,
+            max_batch: int = 512,
+        ):
+        """Randomized signature / neural signature kernel with tanh
+        activation.
+
+        Args:
+            seed (PRNGKeyArray): Random seed for matrices, biases, initial value.
+            n_features (int): Dimension of feature vector.
+            max_batch (int): Max batch size for computations.
+        """
+        super().__init__(max_batch)
+        self.n_features = n_features
+        self.seed = seed
+
+
+    def fit(self, X: Float[Array, "N  T  D"], y=None):
+        """
+        Initializes the random matrices and biases used in the 
+        randomized signature kernel / neural sig kernel.
+
+        Args:
+            X (Float[Array, "N  T  D"]): Batched time series input.
+        """
+        # Get shape, dtype
+        N, T, D = X.shape
+        dtype = X.dtype
+        seed_A, seed_b, seed_Z0 = jax.random.split(self.seed, 3)
+        
+        # Initialize the random matrices
+        self.A = jax.random.normal(
+            seed_A, 
+            (T-1, self.n_features, self.n_features, D),
+            dtype=dtype
+        )
+        self.A /= np.sqrt(self.n_features)
+
+        # Initialize the random biases
+        self.b = jax.random.normal(
+            seed_b, 
+            (T-1, self.n_features, D),
+            dtype=dtype
+        )
+
+        # Initialize the initial value of the randomized signature
+        self.Z0 = jax.random.normal(
+            seed_Z0, 
+            (self.n_features,),
+            dtype=dtype
+        )
+
+        #vmap the transform
+        self.vmapped_transform = jax.vmap(
+            lambda x: time_inhomogenous_randomized_signature(x, self.A, self.b, self.Z0),
         )
 
         return self
