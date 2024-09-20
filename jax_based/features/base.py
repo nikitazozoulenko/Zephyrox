@@ -94,7 +94,7 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
         self.epsilon = epsilon
 
 
-    def fit(self, X: Float[Array, "N  T  D"]):
+    def fit(self, X: Float[Array, "N  T  D"], y=None):
         self.mean = X.mean(axis=0, keepdims=True)
         self.std = X.std(axis=0, keepdims=True)
 

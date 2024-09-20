@@ -167,7 +167,6 @@ def run_all_experiments(X_train, y_train, X_test, y_test):
             rbf_dimension = 800,
             max_batch = max_batch,
             )],
-        
         ]
 
     numpy_seed = 99
