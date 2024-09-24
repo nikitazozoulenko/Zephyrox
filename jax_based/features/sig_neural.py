@@ -17,6 +17,7 @@ def scanbody_randomized_signature(
         A: Float[Array, "n_features  n_features  D"],
         b: Float[Array, "n_features  D"],
         activation:Callable = jnp.tanh,
+        delta_scale: Float = 1.0,
 ):
     """
     Inner loop of the randomized signature kernel / neural sig kernel.
@@ -26,12 +27,14 @@ def scanbody_randomized_signature(
         diff (Float[Array, "D"]): Difference of the time series.
         A (Float[Array, "n_features  n_features  D"]): Random matrix.
         b (Float[Array, "n_features  D"]): Random bias.
+        activation (Callable): Activation function.
+        delta_scale (Float): Scaling factor for Euler discretization.
     """
     Z_0 = Z
     Z = jnp.dot(Z, A) + b
     Z = activation(Z) * diff[None, :]
     Z = Z.mean(axis=-1)
-    return Z+Z_0, None
+    return Z_0 + delta_scale*Z, None
 
 
 def randomized_signature(
@@ -50,9 +53,10 @@ def randomized_signature(
         b (Float[Array, "n_features  D"]): Random bias.
         Z_0 (Float[Array, "n_features"]): Initial value of the randomized signature.
     """
+    T = X.shape[0]
     diffs = jnp.diff(X, axis=0) # shape (T-1, D)
     carry, _ = lax.scan(
-        lambda carry, diff: scanbody_randomized_signature(carry, diff, A, b),
+        lambda carry, diff: scanbody_randomized_signature(carry, diff, A, b, delta_scale=1/(T-1)),
         Z_0,
         diffs
     )
@@ -156,11 +160,12 @@ def time_inhomogenous_randomized_signature(
         b (Float[Array, "n_features  D"]): Random bias.
         Z_0 (Float[Array, "n_features"]): Initial value of the randomized signature.
     """
+    T = X.shape[0]
     diffs = jnp.diff(X, axis=0) # shape (T-1, D)
 
     def scan_body(carry, x):
         Tdiff, TA, Tb = x
-        return scanbody_randomized_signature(carry, Tdiff, TA, Tb)
+        return scanbody_randomized_signature(carry, Tdiff, TA, Tb, delta_scale=1/(T-1))
     
     carry, _ = lax.scan(
         scan_body,

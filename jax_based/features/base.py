@@ -1,4 +1,4 @@
-from typing import Tuple, List, Union, Any, Optional, Dict, Literal
+from typing import Tuple, List, Union, Any, Optional, Dict, Literal, Callable
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -106,7 +106,50 @@ class TabularTimeseriesFeatures(TimeseriesFeatureTransformer):
         N, T, D = X.shape
         X = (X - self.mean) / (self.std + self.epsilon)
         return X.reshape(N, -1)
+
+
+
+#########################################  |
+########### Random Projection ###########  |
+######################################### \|/
+
+
+class RandomProjectionFeatures(TimeseriesFeatureTransformer):
+    def __init__(
+            self,
+            prng_key: PRNGKeyArray,
+            n_features: int,
+            max_batch: int = 1000000,
+            activation: Callable = lambda x: x,
+        ):
+        """
+        Random (fixed) projection of the flattened time series.
+
+        Args:
+            prng_key (PRNGKeyArray): Random seed for projection.
+            max_batch (int): Maximum batch size for computations.
+            epsilon (float): Small value to avoid division by zero.
+        """
+        super().__init__(max_batch)
+        self.seed = prng_key
+        self.n_features = n_features
+        self.activation = activation
+
+
+    def fit(self, X: Float[Array, "N  T  D"], y=None):
+        N, T, D = X.shape
+        self.P = jax.random.normal(self.seed, (T*D, self.n_features)) / np.sqrt(T*D)
+
+
+    def _batched_transform(
+        self, 
+        X: Float[Array, "N  T  D"],
+    ) -> Float[Array, "N  T*D"]:
+        N, T, D = X.shape
+        return self.activation(X.reshape(N, -1) @ self.P)
     
+
+
 
 ###########################################################  |
 ########### Random Guess (Uninformed Transfomer) ##########  |
