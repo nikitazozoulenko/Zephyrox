@@ -56,7 +56,7 @@ def randomized_signature(
     T = X.shape[0]
     diffs = jnp.diff(X, axis=0) # shape (T-1, D)
     carry, _ = lax.scan(
-        lambda carry, diff: scanbody_randomized_signature(carry, diff, A, b, delta_scale=1/(T-1)),
+        lambda carry, diff: scanbody_randomized_signature(carry, diff, A, b),
         Z_0,
         diffs
     )
@@ -165,7 +165,7 @@ def time_inhomogenous_randomized_signature(
 
     def scan_body(carry, x):
         Tdiff, TA, Tb = x
-        return scanbody_randomized_signature(carry, Tdiff, TA, Tb, delta_scale=1/(T-1))
+        return scanbody_randomized_signature(carry, Tdiff, TA, Tb)
     
     carry, _ = lax.scan(
         scan_body,

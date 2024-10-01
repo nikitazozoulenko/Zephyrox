@@ -43,7 +43,7 @@ class RocketWrapper(AbstractRocketWrapper):
     def __init__(
             self,
             n_features: int = 3000,
-            max_batch: int = 10000,
+            max_batch: int = 1000000,
         ):
         self.n_features = n_features
         super().__init__(
@@ -57,7 +57,7 @@ class MiniRocketWrapper(AbstractRocketWrapper):
     def __init__(
             self,
             n_features: int = 3000,
-            max_batch: int = 10000,
+            max_batch: int = 1000000,
         ):
         self.n_features = n_features
         super().__init__(
@@ -71,7 +71,7 @@ class MultiRocketWrapper(AbstractRocketWrapper):
     def __init__(
             self,
             n_features: int = 3000,
-            max_batch: int = 10000,
+            max_batch: int = 1000000,
         ):
         """
         Wrapper for the MultiRocketTransform from the aeon library.

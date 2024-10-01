@@ -2,6 +2,7 @@
 from typing import Tuple, List, Union, Any, Optional, Dict, Set, Literal, Callable
 from abc import ABC, abstractmethod
 from functools import partial
+import time
 
 import numpy as np
 import jax
@@ -32,50 +33,6 @@ def step_forward_controlled_resnet(
 
 
 
-def forward(
-        Z0: Float[Array, "N  d"],
-        X: Float[Array, "N  T  D"], 
-        weights: Float[Array, "T  d  d  D"],
-        biases: Float[Array, "T  1  d  D"], 
-        activation = lambda x : jnp.maximum(0,x+0.5), # jnp.tanh,
-        #activation = jnp.tanh,
-    ):
-    """
-    Forward of a Controlled ResNet.
-    """
-    T, d, d, D = weights.shape
-    Xdiff = jnp.diff(X, axis=1)
-
-    def scan_body(carry, x):
-        Z = carry
-        (W,b), XTdiff = x
-        return step_forward_controlled_resnet(
-            Z, XTdiff, W, b, activation, 1/T
-            ), None
-
-    Z, _ = lax.scan(
-        scan_body, 
-        Z0, 
-        xs=( (weights, biases), Xdiff.transpose(1,0,2) )
-        )
-    return Z
-
-
-
-def get_init_state(
-        X: Float[Array, "N  T  D"],
-        w: Float[Array, "T*D  d"],
-        b: Float[Array, "1  d"],
-        activation = jnp.tanh, # lambda x : jnp.maximum(0,x+0.5),
-    ):
-    """
-    Initializes Z0 by randomly projecting the flattened time series.
-    """
-    N, T, D = X.shape
-    return activation(X.reshape(N, T*D) @ w + b)
-
-
-
 def init_single_CRN_layer(
         seed: PRNGKeyArray,
         Z: Float[Array, "N  d"],
@@ -94,92 +51,69 @@ def init_single_CRN_layer(
 
 
 
-class SampledControlledResNet(TimeseriesFeatureTransformer):
-    def __init__(
-            self,
-            seed: PRNGKeyArray,
-            n_features: int,
-            activation: Callable = jnp.tanh,
-            max_batch: int = 512,
-            transform_label_to_onehot: bool = False,
-        ):
-        """Controlled ResNet (or randomized signature) initialized with 
-        gradient-based sampling (SWIM). NOTE Initial state Z_0 is hard-coded
-        to be a (fixed) random projection of whole time series.
-
-        Args:
-            seed (PRNGKeyArray): Random seed for matrices, biases, initial value.
-            n_features (int): Number of features of the path development Z.
-            max_batch (int): Max batch size for computations.
-            transform_label_to_onehot (bool): Whether to transform labels to one-hot,
-                which is required for classification tasks.
-        """
-        super().__init__(max_batch)
-        self.seed = seed
-        self.n_features = n_features
-        self.activation = activation
-        self.transform_label_to_onehot = transform_label_to_onehot
-        self.weights = None
-        self.biases = None
+def get_init_state_randproj(
+        X: Float[Array, "N  T  D"],
+        w: Float[Array, "T*D  d"],
+        b: Float[Array, "1  d"],
+        activation, # lambda x : jnp.maximum(0,x+0.5),
+    ):
+    """
+    Initializes Z0 by randomly projecting the flattened time series.
+    """
+    N, T, D = X.shape
+    return activation(X.reshape(N, T*D) @ w + b)
 
 
-    def fit(
-            self, 
-            X: Float[Array, "N  T  D"], 
-            y: Float[Array, "N  p"]
-        ):
-        """
-        Initializes the weights and biases, using SWIM algorithm in the 
-        Controlled ResNet setting. 
 
-        Args:
-            X (Float[Array, "N  T  D"]): Input training data.
-            y (Float[Array, "N  T  p"]): Target training data.
-        """
-        # Get shape, dtype
-        N, T, D = X.shape
-        seedZ0w, seedZ0b, seedRes = jax.random.split(self.seed, 3)
+def memory_efficient_SCRN(
+        X_train: Float[Array, "N  T  D"],
+        y_train: Float[Array, "N  p"],
+        X_test: Float[Array, "N1  T  D"],
+        seed: PRNGKeyArray,
+        n_features: int,
+        activation: Callable = lambda x: jnp.maximum(0,x+0.5), #jnp.tanh,
+        without_dx: bool = False,
+    ):
+    """Memory efficient fit and transform of the SampledControlledResNet.
+    Does not save any model weights, throws away the previous timestep's
+    values and weights after each iteration.
+    """
+    N1, T, D = X_train.shape
+    N2, T, D = X_test.shape
+    seedZ0w, seedZ0b, seedRes = jax.random.split(seed, 3)
+    t0 = time.time()
 
-        # Transform to one-hot if needed for classification fitting.
-        if self.transform_label_to_onehot and (y.ndim == 1 or y.shape[-1] == 1):
-            y = jax.nn.one_hot(y, num_classes=len(jnp.unique(y))) # TODO i think this should work
-
-        #obtain random projection matrix for Z0 initialization #NOTE i think this is kaiming initialization
-        self.proj_w = jax.random.normal(seedZ0w, (D*T, self.n_features)) / np.sqrt(D*T/2)
-        self.proj_b = jax.random.normal(seedZ0b, (1, self.n_features)) / np.sqrt(2)
-        Z0 = get_init_state(X, self.proj_w, self.proj_b)
-        Xdiff = jnp.diff(X, axis=1)
-
-        #the controlled resnet part
-        def scan_body(carry, x):
-            Z = carry
-            XTdiff, seed = x
-            w, b = init_single_CRN_layer(seed, Z, XTdiff, y)
-            return step_forward_controlled_resnet(Z, XTdiff, w, b, self.activation, 1/(T-1)), (w,b)
-
-        carry = Z0
-        Z, (self.weights, self.biases) = lax.scan(
-            scan_body, 
-            carry, 
-            xs=(Xdiff.transpose(1,0,2), jax.random.split(seedRes, T-1))
-            )
-        return self
-
-
-    def _batched_transform(
-            self,
-            X: Float[Array, "N  T  D"],
-        ) -> Float[Array, "N  n_features"]:
-
-        return forward(
-            get_init_state(X, self.proj_w, self.proj_b),
-            X,
-            self.weights,
-            self.biases,
-            self.activation
-            )
+    # Transform to one-hot if needed for classification fitting.
+    if y_train.ndim == 1:
+        y_train = jax.nn.one_hot(y_train, num_classes=len(jnp.unique(y_train)))
     
+    #obtain random projection matrix for Z0 initialization
+    proj_w = jax.random.normal(seedZ0w, (D*T, n_features)) / np.sqrt(D*T)
+    proj_b = jax.random.normal(seedZ0b, (1, n_features))
+    Z0_train = get_init_state_randproj(X_train, proj_w, proj_b, activation)
+    Z0_test = get_init_state_randproj(X_test, proj_w, proj_b, activation)
 
+    #the controlled resnet part
+    Xdiff_train = jnp.diff(X_train, axis=1)
+    Xdiff_test = jnp.diff(X_test, axis=1)
 
+    def scan_body(carry, x):
+        Z_train, Z_test = carry
+        XTdiff_train, XTdiff_test, seed = x
+        w, b = init_single_CRN_layer(seed, Z_train, XTdiff_train, y_train)
+        Z_train = step_forward_controlled_resnet(Z_train, XTdiff_train, w, b, activation)
+        Z_test = step_forward_controlled_resnet(Z_test, XTdiff_test, w, b, activation)
+        return (Z_train, Z_test), None
 
+    if without_dx:
+        Xdiff_test = jnp.ones_like(Xdiff_test) / (T-1)
+        Xdiff_train = jnp.ones_like(Xdiff_train) / (T-1)
 
+    (Z_train, Z_test), _ = lax.scan(
+        scan_body, 
+        (Z0_train, Z0_test), 
+        xs=(Xdiff_train.transpose(1,0,2), Xdiff_test.transpose(1,0,2), jax.random.split(seedRes, T-1))
+        )
+    t1 = time.time()
+
+    return Z_train, Z_test, t1-t0, t1-t0

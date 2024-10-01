@@ -38,7 +38,6 @@ def forward(
         weights: Float[Array, "T  d  d  D"],
         biases: Float[Array, "T  1  d  D"], 
         activation = lambda x : jnp.maximum(0,x+0.5), # jnp.tanh,
-        #activation = jnp.tanh,
     ):
     """
     Forward of a Controlled ResNet.
@@ -146,7 +145,7 @@ class SampledControlledResNet(TimeseriesFeatureTransformer):
 
         #obtain random projection matrix for Z0 initialization #NOTE i think this is kaiming initialization
         self.proj_w = jax.random.normal(seedZ0w, (D*T, self.n_features)) / np.sqrt(D*T/2)
-        self.proj_b = jax.random.normal(seedZ0b, (1, self.n_features)) / np.sqrt(2)
+        self.proj_b = jax.random.normal(seedZ0b, (1, self.n_features)) * np.sqrt(2)
         Z0 = get_init_state(X, self.proj_w, self.proj_b)
         Xdiff = jnp.diff(X, axis=1)
 
