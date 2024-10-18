@@ -17,13 +17,13 @@ def mod_retrieve_name(var): # TODO make this work for calls of the type print_sh
 
 def print_shape(X):
     """Prints the name and shape of an array."""
-    print(X.shape, mod_retrieve_name(X)[-1], "\n")
+    print(X.shape, mod_retrieve_name(X)[-1], X.dtype, "\n")
 
 
 def print_name(X):
     """Prints the name and shape of an array, then the array itself."""
     if hasattr(X, 'shape'):
-        print(X.shape, mod_retrieve_name(X)[-1])
+        print(X.shape, mod_retrieve_name(X)[-1], X.dtype)
     else:
         print(mod_retrieve_name(X)[-1])
     print(X, "\n")
