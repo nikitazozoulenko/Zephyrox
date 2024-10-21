@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
-from sklearn.linear_model import RidgeCV
+from sklearn.linear_model import RidgeCV, RidgeClassifierCV
 
 
 ############################################################################
@@ -235,6 +235,27 @@ class RidgeCVModule(FittableModule):
         return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device).unsqueeze(1) #TODO unsqueeze???
 
 
+class RidgeClassifierCVModule(FittableModule):
+    def __init__(self, alphas=np.logspace(-1, 3, 10)):
+        """RidgeClassifierCV layer using sklearn's RidgeClassifierCV. TODO dont use sklearn"""
+        super(RidgeClassifierCVModule, self).__init__()
+        self.ridge = RidgeClassifierCV(alphas=alphas)
+
+    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        """Fit the sklearn ridge model."""
+        # Make y categorical from one_hot NOTE assumees y one-hot
+        y_cat = torch.argmax(y, dim=1)
+        X_np = X.detach().cpu().numpy().astype(np.float64)
+        y_np = y_cat.detach().cpu().squeeze().numpy().astype(np.float64)
+        self.ridge.fit(X_np, y_np)
+        return self(X), y
+
+    def forward(self, X: Tensor) -> Tensor:
+        X_np = X.detach().cpu().numpy().astype(np.float64)
+        y_pred_np = self.ridge.predict(X_np)
+        return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device)
+
+
 ######################################
 #####       Residual Block       #####
 ######################################
@@ -324,7 +345,7 @@ class ResNet(Sequential):
                  res_activation: nn.Module = nn.Tanh(),
                  residual_scale: float = 1.0,
                  sampling_method: Literal['uniform', 'gradient'] = 'gradient',
-                 output_layer: Literal['ridge', 'dense'] = 'ridge',
+                 output_layer: Literal['ridge', 'dense', 'identity'] = 'ridge',
                  ):
         """Residual network with multiple residual blocks.
         
@@ -341,6 +362,7 @@ class ResNet(Sequential):
             res_activation (nn.Module): Activation function for the residual blocks.
             residual_scale (float): Scale of the residual connection.
             sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
+            output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity'].
         """
         upsample = create_layer(generator, 
                                      upsample_layer, 
@@ -363,6 +385,12 @@ class ResNet(Sequential):
             out = Dense(generator, hidden_size, 1, None)
         elif output_layer == 'ridge':
             out = RidgeCVModule()
+        elif output_layer == 'ridge classifier':
+            out = RidgeClassifierCVModule()
+        elif output_layer == 'identity':
+            out = Identity()
+        else:
+            raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity']. Given: {output_layer}")
         
         super(ResNet, self).__init__(upsample, *residual_blocks, out)
 
