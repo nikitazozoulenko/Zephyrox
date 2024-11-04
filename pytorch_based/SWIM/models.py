@@ -112,6 +112,7 @@ class Dense(FittableModule):
         self.activation = activation
     
     def fit(self, X:Tensor, y:Tensor):
+        self.to(X.device)
         with torch.no_grad():
             nn.init.normal_(self.dense.weight, mean=0, std=self.in_dim**-0.5, generator=self.generator)
             nn.init.normal_(self.dense.bias, mean=0, std=self.in_dim**-0.25, generator=self.generator)
@@ -167,6 +168,7 @@ class SWIMLayer(FittableModule):
         Returns:
             Forwarded activations and labels [f(X), y].
         """
+        self.to(X.device)
         with torch.no_grad():
             N, d = X.shape
             dtype = X.dtype
@@ -220,6 +222,12 @@ class SWIMLayer(FittableModule):
 
 
 
+##########################################
+#### Logistic Regression and RidgeCV  ####
+####      classifiers/regressors       ####
+##########################################
+
+
 class RidgeCVModule(FittableModule):
     def __init__(self, alphas=np.logspace(-1, 3, 10)):
         """RidgeCV layer using sklearn's RidgeCV. TODO dont use sklearn"""
@@ -263,15 +271,18 @@ class RidgeClassifierCVModule(FittableModule):
 
 
 
-##########################################
-#### Logistic Regression with PyTorch ####
-##########################################
-
 class LogisticRegressionModule(FittableModule):
-    def __init__(self, num_epochs = 30):
+    def __init__(self, 
+                 generator: torch.Generator,
+                 batch_size = 512,
+                 num_epochs = 30,
+                 lr = 0.1,):
         super(LogisticRegressionModule, self).__init__()
+        self.generator = generator
         self.model = None
+        self.batch_size = batch_size
         self.num_epochs = num_epochs
+        self.lr = lr
 
     def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
         # Determine input and output dimensions
@@ -290,17 +301,27 @@ class LogisticRegressionModule(FittableModule):
         device = X.device
         self.model.to(device)
 
-        # Define optimizer
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        # Create a CPU generator for DataLoader
+        data_loader_generator = torch.Generator(device='cpu')
+        data_loader_generator.manual_seed(self.generator.initial_seed())
+        dataset = torch.utils.data.TensorDataset(X, y_labels)
+        loader = torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True,
+            generator=data_loader_generator
+        )
 
         # Training loop
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         for epoch in tqdm(range(self.num_epochs)):
             self.model.train()
-            optimizer.zero_grad()
-            outputs = self.model(X)
-            loss = criterion(outputs, y_labels)
-            loss.backward()
-            optimizer.step()
+            for batch_X, batch_y in loader:
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
 
         return self(X), y
 
@@ -442,7 +463,7 @@ class ResNet(Sequential):
         elif output_layer == 'identity':
             out = Identity()
         elif output_layer == 'logistic regression':
-            out = LogisticRegressionModule()
+            out = LogisticRegressionModule(generator)
         else:
             raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
         
@@ -477,12 +498,10 @@ class NeuralEulerODE(ResNet):
 ######################################
 
 
-def kaiming_normal_with_generator(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu', generator=None):
-    fan = nn.init._calculate_correct_fan(tensor, mode)
-    gain = nn.init.calculate_gain(nonlinearity, a)
-    std = gain / fan**0.5
-    with torch.no_grad():
-        tensor.copy_(torch.normal(0, std, size=tensor.size(), generator=generator))
+def kaiming_normal_with_generator(weight, generator=None):
+    fan_in = weight.size(1)
+    std = (2.0 / fan_in) ** 0.5
+    nn.init.normal_(weight, mean=0, std=std, generator=generator)
 
 
 class E2EResNet(FittableModule):
@@ -537,20 +556,49 @@ class E2EResNet(FittableModule):
         ])
         self.output_layer = nn.Linear(hidden_size, out_dim)
 
+        # Optimizer and loss
+        self.loss = loss
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+
+
+    def fit(self, X: Tensor, y: Tensor):
+        """Trains network end to end with Adam optimizer and a tabular data loader"""
+        device = X.device
+        self.to(device)
+
         # Initialize weights for residual blocks with generator
-        kaiming_normal_with_generator(self.upsample.weight, generator=self.generator)
+        kaiming_normal_with_generator(self.upsample.weight, self.generator)
         nn.init.zeros_(self.upsample.bias)
         for block in self.residual_blocks:
             for layer in block:
                 if isinstance(layer, nn.Linear):
-                    kaiming_normal_with_generator(layer.weight, generator=self.generator)
+                    kaiming_normal_with_generator(layer.weight, self.generator)
                     nn.init.zeros_(layer.bias)
-        kaiming_normal_with_generator(self.output_layer.weight, generator=self.generator)
+        kaiming_normal_with_generator(self.output_layer.weight, self.generator)
         nn.init.zeros_(self.output_layer.bias)
 
-        # Optimizer and loss
-        self.loss = loss
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+        # Create a CPU generator for DataLoader
+        data_loader_generator = torch.Generator(device='cpu')
+        data_loader_generator.manual_seed(self.generator.initial_seed())
+        dataset = torch.utils.data.TensorDataset(X, y)
+        loader = torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True, 
+            generator=data_loader_generator
+        )
+
+        # training loop
+        for epoch in tqdm(range(self.epochs)):
+            for batch_X, batch_y in loader:
+                # batch_X and batch_y are already on the device
+                self.optimizer.zero_grad()
+                outputs = self(batch_X)
+                loss = self.loss(outputs, batch_y)
+                loss.backward()
+                self.optimizer.step()
+
+        return self(X), y
 
 
     def forward(self, X: Tensor) -> Tensor:
@@ -562,25 +610,6 @@ class E2EResNet(FittableModule):
         X = self.output_layer(X)
         return X
 
-
-    def fit(self, X: Tensor, y: Tensor):
-        """Trains network end to end with Adam optimizer and a tabular data loader"""
-        dataset = torch.utils.data.TensorDataset(X, y)
-        loader = torch.utils.data.DataLoader(
-            dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True, 
-            generator=self.generator
-        )
-        for epoch in tqdm(range(self.epochs)):
-            for batch_X, batch_y in loader:
-                self.optimizer.zero_grad()
-                outputs = self(batch_X)
-                loss = self.loss(outputs, batch_y)
-                loss.backward()
-                self.optimizer.step()
-
-        return self(X), y
 
 
 
@@ -615,19 +644,27 @@ class RandFeatBoost(FittableModule):
         self.upscale = create_layer(generator, upscale_type, in_dim, hidden_size, activation)
         self.layers = []
         self.deltas = []
+        self.classifiers = []
         self.classifier = None #TODO currently only support logistic regression kind of
 
 
     def fit(self, X: Tensor, y: Tensor):
+        device = X.device
         X0 = X
         X, y = self.upscale.fit(X, y)
+
+        # Create a CPU generator for DataLoader
+        data_loader_generator = torch.Generator(device='cpu')
+        data_loader_generator.manual_seed(self.generator.initial_seed())
+
+        # Layerwise boosting
         for t in range(self.n_blocks):
             layer = ResidualBlock(self.generator, self.hidden_size, self.hidden_size, self.upscale_type, "dense", self.activation)
             layer.fit(X, y)
 
-            #Create top classifier
-            classifier = nn.Linear(self.hidden_size, self.out_dim) #TODO seed this
-            DELTA = nn.Parameter(torch.ones(1, self.hidden_size))
+            # Create top classifier
+            classifier = nn.Linear(self.hidden_size, self.out_dim).to(device)
+            DELTA = nn.Parameter(torch.ones(1, self.hidden_size, device=device))
 
             #data loader
             dataset = torch.utils.data.TensorDataset(X, y)
@@ -635,7 +672,7 @@ class RandFeatBoost(FittableModule):
                 dataset, 
                 batch_size=self.batch_size, 
                 shuffle=True, 
-                generator=self.generator
+                generator=data_loader_generator
             )
 
             #learn top level classifier and boost
@@ -657,6 +694,7 @@ class RandFeatBoost(FittableModule):
             #after convergence, update layers, deltas, and X
             self.layers.append(layer)
             self.deltas.append(DELTA)
+            self.classifiers.append(classifier)
             with torch.no_grad():
                 X = X + self.boost_lr * DELTA * (layer(X)-X)
 
