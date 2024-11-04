@@ -1,9 +1,12 @@
 from typing import Tuple, List, Union, Any, Optional, Dict, Literal, Callable, Type
 import abc
 
+from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.optim
+import torch.utils.data
 from torch import Tensor
 from sklearn.linear_model import RidgeCV, RidgeClassifierCV
 
@@ -85,9 +88,11 @@ Identity = make_fittable(nn.Identity)
 
 ############################################################################
 ##### Layers                                                           #####
-##### - Dense: Fully connected layer                                  #####
-##### - SWIMLayer                                                     #####
-##### - RidgeCV (TODO currently just an sklearn wrapper)
+##### - Dense: Fully connected layer                                   #####
+##### - SWIMLayer                                                      #####
+##### - RidgeCV (TODO currently just an sklearn wrapper)               #####
+##### - RidgeClassifierCV (TODO currently just an sklearn wrapper)     #####
+##### - LogisticRegressionModule                                       #####
 ############################################################################
 
 class Dense(FittableModule):
@@ -235,6 +240,7 @@ class RidgeCVModule(FittableModule):
         return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device).unsqueeze(1) #TODO unsqueeze???
 
 
+
 class RidgeClassifierCVModule(FittableModule):
     def __init__(self, alphas=np.logspace(-1, 3, 10)):
         """RidgeClassifierCV layer using sklearn's RidgeClassifierCV. TODO dont use sklearn"""
@@ -256,6 +262,52 @@ class RidgeClassifierCVModule(FittableModule):
         return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device)
 
 
+
+##########################################
+#### Logistic Regression with PyTorch ####
+##########################################
+
+class LogisticRegressionModule(FittableModule):
+    def __init__(self, num_epochs = 30):
+        super(LogisticRegressionModule, self).__init__()
+        self.model = None
+        self.num_epochs = num_epochs
+
+    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        # Determine input and output dimensions
+        input_dim = X.size(1)
+        if y.dim() > 1 and y.size(1) > 1:
+            output_dim = y.size(1)
+            y_labels = torch.argmax(y, dim=1)
+            criterion = nn.CrossEntropyLoss()
+        else:
+            output_dim = 1
+            y_labels = y.squeeze()
+            criterion = nn.BCEWithLogitsLoss()
+
+        # Define the model
+        self.model = nn.Linear(input_dim, output_dim)
+        device = X.device
+        self.model.to(device)
+
+        # Define optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+
+        # Training loop
+        for epoch in tqdm(range(self.num_epochs)):
+            self.model.train()
+            optimizer.zero_grad()
+            outputs = self.model(X)
+            loss = criterion(outputs, y_labels)
+            loss.backward()
+            optimizer.step()
+
+        return self(X), y
+
+    def forward(self, X: Tensor) -> Tensor:
+        return self.model(X)
+    
+
 ######################################
 #####       Residual Block       #####
 ######################################
@@ -266,7 +318,7 @@ def create_layer(generator: torch.Generator,
                 in_dim:int, 
                 out_dim:int,
                 activation: Optional[nn.Module],
-                sampling_method: str,
+                sampling_method: str = "gradient",
                 ):
     if layer_name == "dense":
         return Dense(generator, in_dim, out_dim, activation)
@@ -345,7 +397,7 @@ class ResNet(Sequential):
                  res_activation: nn.Module = nn.Tanh(),
                  residual_scale: float = 1.0,
                  sampling_method: Literal['uniform', 'gradient'] = 'gradient',
-                 output_layer: Literal['ridge', 'dense', 'identity'] = 'ridge',
+                 output_layer: Literal['ridge', 'dense', 'identity', 'logistic regression'] = 'ridge',
                  ):
         """Residual network with multiple residual blocks.
         
@@ -362,7 +414,7 @@ class ResNet(Sequential):
             res_activation (nn.Module): Activation function for the residual blocks.
             residual_scale (float): Scale of the residual connection.
             sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
-            output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity'].
+            output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression'].
         """
         upsample = create_layer(generator, 
                                      upsample_layer, 
@@ -389,8 +441,10 @@ class ResNet(Sequential):
             out = RidgeClassifierCVModule()
         elif output_layer == 'identity':
             out = Identity()
+        elif output_layer == 'logistic regression':
+            out = LogisticRegressionModule()
         else:
-            raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity']. Given: {output_layer}")
+            raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
         
         super(ResNet, self).__init__(upsample, *residual_blocks, out)
 
@@ -415,3 +469,204 @@ class NeuralEulerODE(ResNet):
                                              n_layers, upsample_layer, upsample_activation,
                                              res_layer, "identity", res_activation,
                                              residual_scale, sampling_method, output_layer)
+
+
+######################################
+##### Trainers                   #####
+##### - AdamTrainer              #####
+######################################
+
+
+def kaiming_normal_with_generator(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu', generator=None):
+    fan = nn.init._calculate_correct_fan(tensor, mode)
+    gain = nn.init.calculate_gain(nonlinearity, a)
+    std = gain / fan**0.5
+    with torch.no_grad():
+        tensor.copy_(torch.normal(0, std, size=tensor.size(), generator=generator))
+
+
+class E2EResNet(FittableModule):
+    def __init__(self, 
+                 generator: torch.Generator,
+                 in_dim: int,
+                 hidden_size: int,
+                 bottleneck_dim: int,
+                 out_dim: int,
+                 n_blocks: int,
+                 activation: nn.Module = nn.Tanh(),
+                 loss: nn.Module = nn.MSELoss(),
+                 lr: float = 1e-3,
+                 epochs: int = 10,
+                 weight_decay: float = 1e-5,
+                 batch_size: int = 64,
+                 ):
+        """End-to-end trainer for residual networks using Adam optimizer with Batch Normalization.
+        
+        Args:
+            generator (torch.Generator): PRNG object.
+            in_dim (int): Input dimension.
+            hidden_size (int): Dimension of the hidden layers.
+            bottleneck_dim (int): Dimension of the bottleneck layer.
+            out_dim (int): Output dimension.
+            n_blocks (int): Number of residual blocks.
+            activation (nn.Module): Activation function.
+            loss (nn.Module): Loss function.
+            lr (float): Learning rate for Adam optimizer.
+            epochs (int): Number of training epochs.
+            weight_decay (float): Weight decay for Adam optimizer.
+            batch_size (int): Batch size for training.
+        """
+        super(E2EResNet, self).__init__()
+        self.generator = generator
+        self.epochs = epochs
+        self.batch_size = batch_size
+
+        # Define resnet with batch norm
+        self.upsample = nn.Linear(in_dim, hidden_size)
+        self.batch_norm = nn.BatchNorm1d(hidden_size)
+        self.activation = activation
+        
+        self.residual_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_size, bottleneck_dim),
+                nn.BatchNorm1d(bottleneck_dim),
+                activation,
+                nn.Linear(bottleneck_dim, hidden_size),
+                nn.BatchNorm1d(hidden_size)
+            ) for _ in range(n_blocks)
+        ])
+        self.output_layer = nn.Linear(hidden_size, out_dim)
+
+        # Initialize weights for residual blocks with generator
+        kaiming_normal_with_generator(self.upsample.weight, generator=self.generator)
+        nn.init.zeros_(self.upsample.bias)
+        for block in self.residual_blocks:
+            for layer in block:
+                if isinstance(layer, nn.Linear):
+                    kaiming_normal_with_generator(layer.weight, generator=self.generator)
+                    nn.init.zeros_(layer.bias)
+        kaiming_normal_with_generator(self.output_layer.weight, generator=self.generator)
+        nn.init.zeros_(self.output_layer.bias)
+
+        # Optimizer and loss
+        self.loss = loss
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+
+
+    def forward(self, X: Tensor) -> Tensor:
+        X = self.upsample(X)
+        X = self.batch_norm(X)
+        X = self.activation(X)
+        for block in self.residual_blocks:
+            X = X + block(X)
+        X = self.output_layer(X)
+        return X
+
+
+    def fit(self, X: Tensor, y: Tensor):
+        """Trains network end to end with Adam optimizer and a tabular data loader"""
+        dataset = torch.utils.data.TensorDataset(X, y)
+        loader = torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True, 
+            generator=self.generator
+        )
+        for epoch in tqdm(range(self.epochs)):
+            for batch_X, batch_y in loader:
+                self.optimizer.zero_grad()
+                outputs = self(batch_X)
+                loss = self.loss(outputs, batch_y)
+                loss.backward()
+                self.optimizer.step()
+
+        return self(X), y
+
+
+
+class RandFeatBoost(FittableModule):
+    def __init__(self, 
+                 generator: torch.Generator, 
+                 in_dim: int = 1,
+                 hidden_size: int = 128, 
+                 out_dim: int = 1,
+                 n_blocks: int = 5,
+                 activation: nn.Module = nn.Tanh(),
+                 loss_fn: nn.Module = nn.MSELoss(),
+                 adam_lr: float = 1e-3,
+                 boost_lr: float = 1.0,
+                 epochs: int = 50,
+                 batch_size: int = 64,
+                 upscale_type = "SWIM", # "dense", identity
+                 ):
+        super(RandFeatBoost, self).__init__()
+        self.generator = generator
+        self.hidden_size = hidden_size
+        self.out_dim = out_dim
+        self.n_blocks = n_blocks
+        self.activation = activation
+        self.loss_fn = loss_fn
+        self.adam_lr = adam_lr
+        self.boost_lr = boost_lr
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.upscale_type = upscale_type
+
+        self.upscale = create_layer(generator, upscale_type, in_dim, hidden_size, activation)
+        self.layers = []
+        self.deltas = []
+        self.classifier = None #TODO currently only support logistic regression kind of
+
+
+    def fit(self, X: Tensor, y: Tensor):
+        X0 = X
+        X, y = self.upscale.fit(X, y)
+        for t in range(self.n_blocks):
+            layer = ResidualBlock(self.generator, self.hidden_size, self.hidden_size, self.upscale_type, "dense", self.activation)
+            layer.fit(X, y)
+
+            #Create top classifier
+            classifier = nn.Linear(self.hidden_size, self.out_dim) #TODO seed this
+            DELTA = nn.Parameter(torch.ones(1, self.hidden_size))
+
+            #data loader
+            dataset = torch.utils.data.TensorDataset(X, y)
+            loader = torch.utils.data.DataLoader(
+                dataset, 
+                batch_size=self.batch_size, 
+                shuffle=True, 
+                generator=self.generator
+            )
+
+            #learn top level classifier and boost
+            params = list(classifier.parameters()) + [DELTA]
+            self.optimizer = torch.optim.Adam(params, lr=self.adam_lr, weight_decay=1e-5)
+            for epoch in tqdm(range(self.epochs)):
+                for batch_X, batch_y in loader:
+                    self.optimizer.zero_grad()
+
+                    #forward pass
+                    FofX = layer(batch_X) - batch_X # due to how i programmed ResidualBlock...
+                    outputs = classifier(batch_X + DELTA * FofX)
+
+                    #loss and backprop
+                    loss = self.loss_fn(outputs, batch_y)
+                    loss.backward()
+                    self.optimizer.step()
+            
+            #after convergence, update layers, deltas, and X
+            self.layers.append(layer)
+            self.deltas.append(DELTA)
+            with torch.no_grad():
+                X = X + self.boost_lr * DELTA * (layer(X)-X)
+
+        self.classifier = classifier
+        return self(X0), y
+
+
+    def forward(self, X: Tensor) -> Tensor:
+        X = self.upscale(X)
+        for layer, DELTA in zip(self.layers, self.deltas):
+            FofX = layer(X) - X
+            X = X + self.boost_lr * DELTA * FofX
+        return self.classifier(X)
