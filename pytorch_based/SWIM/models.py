@@ -276,7 +276,7 @@ class LogisticRegressionModule(FittableModule):
                  generator: torch.Generator,
                  batch_size = 512,
                  num_epochs = 30,
-                 lr = 0.1,):
+                 lr = 0.01,):
         super(LogisticRegressionModule, self).__init__()
         self.generator = generator
         self.model = None
@@ -627,6 +627,7 @@ class RandFeatBoost(FittableModule):
                  epochs: int = 50,
                  batch_size: int = 64,
                  upscale_type = "SWIM", # "dense", identity
+                 second_in_resblock = "identity",
                  ):
         super(RandFeatBoost, self).__init__()
         self.generator = generator
@@ -640,6 +641,7 @@ class RandFeatBoost(FittableModule):
         self.epochs = epochs
         self.batch_size = batch_size
         self.upscale_type = upscale_type
+        self.second_in_resblock = second_in_resblock
 
         self.upscale = create_layer(generator, upscale_type, in_dim, hidden_size, activation)
         self.layers = []
@@ -659,12 +661,16 @@ class RandFeatBoost(FittableModule):
 
         # Layerwise boosting
         for t in range(self.n_blocks):
-            layer = ResidualBlock(self.generator, self.hidden_size, self.hidden_size, self.upscale_type, "dense", self.activation)
+            layer = ResidualBlock(self.generator, self.hidden_size, self.hidden_size, self.upscale_type, self.second_in_resblock, self.activation)
             layer.fit(X, y)
 
             # Create top classifier
             classifier = nn.Linear(self.hidden_size, self.out_dim).to(device)
-            DELTA = nn.Parameter(torch.ones(1, self.hidden_size, device=device))
+            #DELTA = nn.Parameter(torch.zeros(1, self.hidden_size, device=device))
+            DELTA = nn.Parameter(torch.zeros(1, 1, device=device))
+            if t > 0:
+                classifier.weight.data = self.classifiers[-1].weight.data.clone()
+                classifier.bias.data = self.classifiers[-1].bias.data.clone()
 
             #data loader
             dataset = torch.utils.data.TensorDataset(X, y)
