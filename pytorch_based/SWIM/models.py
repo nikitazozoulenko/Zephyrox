@@ -224,7 +224,7 @@ class SWIMLayer(FittableModule):
 
 ##########################################
 #### Logistic Regression and RidgeCV  ####
-####      classifiers/regressors       ####
+####      classifiers/regressors      ####
 ##########################################
 
 
