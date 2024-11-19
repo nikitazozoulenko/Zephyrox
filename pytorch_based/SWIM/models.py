@@ -92,7 +92,7 @@ Identity = make_fittable(nn.Identity)
 ##### - SWIMLayer                                                      #####
 ##### - RidgeCV (TODO currently just an sklearn wrapper)               #####
 ##### - RidgeClassifierCV (TODO currently just an sklearn wrapper)     #####
-##### - LogisticRegressionModule                                       #####
+##### - LogisticRegressionSGD                                       #####
 ############################################################################
 
 class Dense(FittableModule):
@@ -271,13 +271,13 @@ class RidgeClassifierCVModule(FittableModule):
 
 
 
-class LogisticRegressionModule(FittableModule):
+class LogisticRegressionSGD(FittableModule):
     def __init__(self, 
                  generator: torch.Generator,
                  batch_size = 512,
                  num_epochs = 30,
                  lr = 0.01,):
-        super(LogisticRegressionModule, self).__init__()
+        super(LogisticRegressionSGD, self).__init__()
         self.generator = generator
         self.model = None
         self.batch_size = batch_size
@@ -463,7 +463,7 @@ class ResNet(Sequential):
         elif output_layer == 'identity':
             out = Identity()
         elif output_layer == 'logistic regression':
-            out = LogisticRegressionModule(generator)
+            out = LogisticRegressionSGD(generator)
         else:
             raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
         
@@ -777,6 +777,7 @@ class StagewiseRandFeatBoostRegression(FittableModule):
             self.alphas.append(alpha)
 
             # Layerwise boosting
+            N = X.size(0)
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
                 layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
