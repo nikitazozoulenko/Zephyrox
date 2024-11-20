@@ -5,6 +5,7 @@ from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim
 import torch.utils.data
 from torch import Tensor
@@ -327,7 +328,72 @@ class LogisticRegressionSGD(FittableModule):
 
     def forward(self, X: Tensor) -> Tensor:
         return self.model(X)
-    
+
+
+class LogisticRegression(FittableModule):
+    def __init__(self, 
+                 generator: torch.Generator,
+                 in_dim: int = 784,
+                 out_dim: int = 10,
+                 l2_reg: float = 1.0,
+                 lr: float = 1.0,
+                 max_iter: int = 20,
+                 ):
+        super(LogisticRegression, self).__init__()
+        self.generator = generator
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.l2_reg = l2_reg
+        self.lr = lr
+        self.max_iter = max_iter
+
+        if out_dim > 1:
+            self.loss = F.cross_entropy #this is with logits
+        else:
+            self.loss = F.binary_cross_entropy_with_logits
+
+
+    def fit(self, 
+            X: Tensor, 
+            y: Tensor,
+            init_W_b: Optional[Tuple[Tensor, Tensor]] = None,
+            ) -> Tuple[Tensor, Tensor]:
+        
+        # No onehot encoding
+        if y.dim() > 1:
+            y_labels = torch.argmax(y, dim=1)
+        else:
+            y_labels = y
+
+        # Put model on device
+        device = X.device
+        self.to(device)
+
+        # Initialize weights and bias
+        if init_W_b is not None:
+            W, b = init_W_b
+            self.linear.weight.data = W
+            self.linear.bias.data = b
+        else:
+            kaiming_normal_with_generator(self.linear.weight, self.generator)
+            nn.init.zeros_(self.linear.bias)
+        
+        with torch.enable_grad():
+            # Optimize
+            optimizer = torch.optim.LBFGS(self.linear.parameters(), lr=self.lr, max_iter=self.max_iter)
+            def closure():
+                optimizer.zero_grad()
+                logits = self.linear(X)
+                loss = self.loss(logits, y_labels)
+                loss += self.l2_reg * torch.linalg.norm(self.linear.weight)**2
+                loss.backward()
+                return loss
+            optimizer.step(closure)
+        return self(X), y
+
+
+    def forward(self, X: Tensor) -> Tensor:
+        return self.linear(X)
+
 
 ######################################
 #####       Residual Block       #####
