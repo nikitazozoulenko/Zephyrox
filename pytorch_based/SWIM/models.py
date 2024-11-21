@@ -11,6 +11,8 @@ import torch.utils.data
 from torch import Tensor
 from sklearn.linear_model import RidgeCV, RidgeClassifierCV
 
+from ridge_ALOOCV import fit_ridge_ALOOCV
+
 
 ############################################################################
 ##### Base classes                                                     #####
@@ -93,7 +95,8 @@ Identity = make_fittable(nn.Identity)
 ##### - SWIMLayer                                                      #####
 ##### - RidgeCV (TODO currently just an sklearn wrapper)               #####
 ##### - RidgeClassifierCV (TODO currently just an sklearn wrapper)     #####
-##### - LogisticRegressionSGD                                       #####
+##### - LogisticRegressionSGD
+##### - LogisticRegression                                             #####
 ############################################################################
 
 class Dense(FittableModule):
@@ -230,23 +233,23 @@ class SWIMLayer(FittableModule):
 
 
 class RidgeCVModule(FittableModule):
-    def __init__(self, alphas=np.logspace(-1, 3, 10)):
-        """RidgeCV layer using sklearn's RidgeCV. TODO dont use sklearn"""
+    def __init__(self, alphas=torch.logspace(-4, 3, 10)):
+        """Ridge Regression with optimal l2_reg optimization by
+        approximate leave-one-out cross-validation (ALOOCV)"""
         super(RidgeCVModule, self).__init__()
-        self.ridge = RidgeCV(alphas=alphas)
+        self.alphas = alphas
+        self.W = None
+        self.b = None
+        self._alpha = None
 
     def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
-        """Fit the RidgeCV model. TODO dont use sklearn"""
-        X_np = X.detach().cpu().numpy().astype(np.float64)
-        y_np = y.detach().cpu().squeeze().numpy().astype(np.float64)
-        self.ridge.fit(X_np, y_np)
+        """Fit the RidgeCV model with ALOOCV"""
+        self.W, self.b, self._alpha = fit_ridge_ALOOCV(X, y, alphas=self.alphas)
         return self(X), y
 
     def forward(self, X: Tensor) -> Tensor:
-        """Forward pass through the RidgeCV model. TODO dont use sklearn"""
-        X_np = X.detach().cpu().numpy().astype(np.float64)
-        y_pred_np = self.ridge.predict(X_np)
-        return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device).unsqueeze(1) #TODO unsqueeze???
+        return X @ self.W + self.b
+
 
 
 
@@ -333,9 +336,9 @@ class LogisticRegressionSGD(FittableModule):
 class LogisticRegression(FittableModule):
     def __init__(self, 
                  generator: torch.Generator,
-                 in_dim: int = 784,
+                 in_dim: int,
                  out_dim: int = 10,
-                 l2_reg: float = 1.0,
+                 l2_reg: float = 0.001,
                  lr: float = 1.0,
                  max_iter: int = 20,
                  ):
@@ -529,7 +532,7 @@ class ResNet(Sequential):
         elif output_layer == 'identity':
             out = Identity()
         elif output_layer == 'logistic regression':
-            out = LogisticRegressionSGD(generator)
+            out = LogisticRegression(generator)
         else:
             raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
         
@@ -883,3 +886,158 @@ class StagewiseRandFeatBoostRegression(FittableModule):
             for layer, Delta in zip(self.layers, self.deltas):
                 X = X + self.boost_lr * layer(X) @ Delta
             return X @ self.W[-1] + self.b[-1]
+        
+
+
+
+
+
+
+
+def line_search_cross_entropy(cls, X, y, G_hat):
+    """Solves the line search risk minimizatin problem
+    R(W, X + a * g) for mutliclass cross entropy loss"""
+    # No onehot encoding
+    if y.dim() > 1:
+        y_labels = torch.argmax(y, dim=1)
+    else:
+        y_labels = y
+
+    # Optimize
+    with torch.enable_grad():
+        alpha = torch.tensor([0.0], requires_grad=True, device=X.device, dtype=X.dtype)
+        optimizer = torch.optim.LBFGS([alpha])
+        def closure():
+            optimizer.zero_grad()
+            logits = cls(X + alpha * G_hat)
+            loss = nn.functional.cross_entropy(logits, y_labels)
+            loss.backward()
+            print("linesearch loss", loss)
+            return loss
+        optimizer.step(closure)
+
+    return alpha.detach().item()
+
+
+
+
+class GradientRandomFeatureBoostingClassification(FittableModule):
+    def __init__(self, 
+                 generator: torch.Generator, 
+                 hidden_dim: int = 128, # TODO
+                 bottleneck_dim: int = 128,
+                 out_dim: int = 10,
+                 n_layers: int = 5,
+                 activation: nn.Module = nn.Tanh(),
+                 l2_reg: float = 1,
+                 feature_type = "SWIM", # "dense", identity
+                 boost_lr: float = 1.0,
+                 upscale: Optional[str] = "dense",
+                 ):
+        super(GradientRandomFeatureBoostingClassification, self).__init__()
+        self.generator = generator
+        self.hidden_dim = hidden_dim
+        self.bottleneck_dim = bottleneck_dim
+        self.out_dim = out_dim
+        self.n_layers = n_layers
+        self.activation = activation
+        self.l2_reg = l2_reg
+        self.feature_type = feature_type
+        self.boost_lr = boost_lr
+        self.upscale = upscale
+
+        # save for now. for more memory efficient implementation, we can remove a lot of this
+        self.classifiers = []
+        self.alphas = []
+        self.layers = []
+        self.deltas = []
+
+
+    def fit(self, X: Tensor, y: Tensor):
+        with torch.no_grad():
+
+            #optional upscale
+            if self.upscale == "dense":
+                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, None)
+                X, y = self.upscale.fit(X, y)
+            elif self.upscale == "SWIM":
+                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, self.activation)
+                X, y = self.upscale.fit(X, y)
+
+            # Create classifier W_0
+            cls = LogisticRegression(
+                self.generator,
+                in_dim = self.hidden_dim,
+                out_dim = self.out_dim,
+                l2_reg = self.l2_reg,
+                max_iter = 100,
+            ).to(X.device)
+            cls.fit(X, y)
+            self.classifiers.append(cls)
+
+            # Layerwise boosting
+            N = X.size(0)
+            for t in range(self.n_layers):
+                # Step 1: Create random feature layer   
+                layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
+                F, y = layer.fit(X, y)
+
+                # Step 2: Obtain activation gradient
+                # X shape (N, D) --- ResNet neurons
+                # F shape (N, p) --- random features
+                # y shape (N, d) --- one-hot target
+                # r shape (N, D) --- residual at currect boosting iteration
+                # W shape (D, d) --- top level classifier
+                # probs shape (N, d) --- predicted probabilities
+
+
+                probs = nn.functional.softmax(cls(X), dim=1)
+                G = (y - probs) @ cls.linear.weight #negative gradient TODO divide by N?
+
+                # fit Least Squares to negative gradient (finding functional direction)
+                Delta, Delta_b, _ = fit_ridge_ALOOCV(F, G)
+                print("alpha", _)
+
+                # Line search for risk minimization of R(W_t, Phi_t + linesearch * G_hat)
+                G_hat = F @ Delta + Delta_b
+                linesearch = line_search_cross_entropy(cls, X, y, G_hat)
+                print("Linesearch", linesearch)
+                print("Gradient hat norm", torch.linalg.norm(G_hat))
+
+                # Step 3: Learn top level classifier
+                X = X + self.boost_lr * linesearch * G_hat
+                cls = LogisticRegression(
+                    self.generator,
+                    in_dim = self.hidden_dim,
+                    out_dim = self.out_dim,
+                    l2_reg = self.l2_reg,
+                    max_iter = 20,
+                ).to(X.device)
+                cls.fit(
+                    X, 
+                    y, 
+                    init_W_b = (cls.linear.weight.detach().clone(), cls.linear.bias.detach().clone()) #TODO do i want this? or start from scratch?
+                )
+
+                #update Delta scale
+                Delta = Delta * linesearch
+                Delta_b = Delta_b * linesearch
+
+                # store
+                self.layers.append(layer)
+                self.deltas.append((Delta, Delta_b))
+                self.classifiers.append(cls)
+
+        return cls(X), y
+
+
+    def forward(self, X: Tensor) -> Tensor:
+        with torch.no_grad():
+            if self.upscale is not None:
+                X = self.upscale(X)
+            for layer, (Delta, Delta_b) in zip(self.layers, self.deltas):
+                X = X + self.boost_lr * (layer(X) @ Delta + Delta_b)
+            return self.classifiers[-1](X)
+        
+
+# TODO do layerwise SGD training for the stagewise boosting

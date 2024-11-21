@@ -7,7 +7,7 @@ from torch import Tensor
 def fit_ridge_ALOOCV(
         X: Tensor,
         y: Tensor,
-        alphas: List[float] = [1e-2, 1e-1, 1, 10],
+        alphas: List[float] = [0.001, 0.01, 0.1, 1, 10],
         fit_intercept: bool = True
     ) -> Tuple[Tensor, float]:
     """
@@ -35,7 +35,7 @@ def fit_ridge_ALOOCV(
         y = y - y.mean(dim=0)
 
     # Convert alphas to tensor on the same device as X
-    alphas = torch.tensor(alphas, device=X.device) # Shape (n_alphas,)
+    alphas = torch.tensor(alphas, device=X.device, dtype=X.dtype) # Shape (n_alphas,)
     eigvals, eigvecs = torch.linalg.eigh(X.T @ X)  # eigvals: (D,), eigvecs: (D, D)
 
     # Project y onto the eigenspace
