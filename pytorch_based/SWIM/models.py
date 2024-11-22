@@ -891,6 +891,112 @@ class StagewiseRandFeatBoostRegression(FittableModule):
 
 
 
+class GradientRandFeatBoostRegression(FittableModule):
+    def __init__(self, 
+                 generator: torch.Generator, 
+                 hidden_dim: int = 128, #TODO
+                 bottleneck_dim: int = 128,
+                 out_dim: int = 1,
+                 n_layers: int = 5,
+                 activation: nn.Module = nn.Tanh(),
+                 l2_reg: float = 0.01,
+                 feature_type = "SWIM", # "dense", identity
+                 boost_lr: float = 1.0,
+                 upscale: Optional[str] = "dense",
+                 ):
+        super(GradientRandFeatBoostRegression, self).__init__()
+        self.generator = generator
+        self.hidden_dim = hidden_dim
+        self.bottleneck_dim = bottleneck_dim
+        self.out_dim = out_dim
+        self.n_layers = n_layers
+        self.activation = activation
+        self.l2_reg = l2_reg
+        self.feature_type = feature_type
+        self.boost_lr = boost_lr
+        self.upscale = upscale
+
+        # save for now. for more memory efficient implementation, we can remove a lot of this
+        self.W = []
+        self.b = []
+        self.alphas = []
+        self.layers = []
+        self.deltas = []
+
+
+    def fit(self, X: Tensor, y: Tensor):
+        with torch.no_grad():
+            #optional upscale
+            if self.upscale == "dense":
+                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, None)
+                X, y = self.upscale.fit(X, y)
+            elif self.upscale == "SWIM":
+                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, self.activation)
+                X, y = self.upscale.fit(X, y)
+
+            # Create regressor W_0
+            W, b, alpha = fit_ridge_ALOOCV(X, y)
+            self.W.append(W)
+            self.b.append(b)
+            self.alphas.append(alpha)
+
+            # Layerwise boosting
+            N = X.size(0)
+            for t in range(self.n_layers):
+                # Step 1: Create random feature layer   
+                layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
+                F, y = layer.fit(X, y)
+
+                # Step 2: Obtain activation gradient and learn Delta
+                # X shape (N, D) --- ResNet neurons
+                # F shape (N, p) --- random features
+                # y shape (N, d) --- target
+                # W shape (D, d) --- top level classifier
+                # G shape (N, D) --- gradient of neurons
+                # r shape (N, D) --- residual at currect boosting iteration
+                r = y - X @ W - b
+                G = r @ W.T
+                
+                # fit to negative gradient (finding functional direction)
+                Delta, Delta_b, _ = fit_ridge_ALOOCV(F, G)
+
+                # Line search closed form risk minimization of R(W_t, Phi_{t+1})
+                Ghat = F @ Delta + Delta_b
+                XW = Ghat @ W
+                numerator = torch.sum( r * XW / N )
+                denominator = torch.sum(XW*XW/N)
+                linesearch = numerator / (denominator + 0.01)
+
+                # Step 3: Learn top level classifier
+                X = X + self.boost_lr * linesearch * Ghat
+                W, b, alpha = fit_ridge_ALOOCV(X, y)
+
+                #update Delta scale
+                Delta = Delta * linesearch
+                Delta_b = Delta_b * linesearch
+
+                # store
+                self.layers.append(layer)
+                self.deltas.append((Delta, Delta_b))
+                self.W.append(W)
+                self.b.append(b)
+                self.alphas.append(alpha)
+
+            return X @ W + b, y
+
+
+    def forward(self, X: Tensor) -> Tensor:
+        with torch.no_grad():
+            if self.upscale is not None:
+                X = self.upscale(X)
+            for layer, (Delta, Delta_b) in zip(self.layers, self.deltas):
+                X = X + self.boost_lr * (layer(X) @ Delta + Delta_b)
+            return X @ self.W[-1] + self.b[-1]
+        
+
+
+
+
 
 
 
@@ -1039,5 +1145,7 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
                 X = X + self.boost_lr * (layer(X) @ Delta + Delta_b)
             return self.classifiers[-1](X)
         
+
+
 
 # TODO do layerwise SGD training for the stagewise boosting
