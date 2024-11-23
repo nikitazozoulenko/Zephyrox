@@ -231,13 +231,16 @@ class SWIMLayer(FittableModule):
 ####      classifiers/regressors      ####
 ##########################################
 
-
 class RidgeCVModule(FittableModule):
-    def __init__(self, alphas=torch.logspace(-4, 3, 10)):
+    def __init__(self, 
+                lower_alpha: float = 1e-6,
+                upper_alpha: float = 10,
+                n_alphas: int = 10,
+                ):
         """Ridge Regression with optimal l2_reg optimization by
         approximate leave-one-out cross-validation (ALOOCV)"""
         super(RidgeCVModule, self).__init__()
-        self.alphas = alphas
+        self.alphas = np.logspace(np.log10(lower_alpha), np.log10(upper_alpha), n_alphas)
         self.W = None
         self.b = None
         self._alpha = None
@@ -249,6 +252,31 @@ class RidgeCVModule(FittableModule):
 
     def forward(self, X: Tensor) -> Tensor:
         return X @ self.W + self.b
+    
+
+class RidgeModule(FittableModule):
+    def __init__(self, l2_reg: float = 1e-3):
+        super(RidgeModule, self).__init__()
+        self.l2_reg = l2_reg
+        self.W = None
+        self.b = None
+    
+    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        """Fit the Ridge model with a fixed l2_reg"""
+        X_mean = X.mean(dim=0, keepdim=True)
+        y_mean = y.mean(dim=0, keepdim=True)
+        X_centered = X - X_mean
+        y_centered = y - y_mean
+        
+        A = X_centered.T @ X_centered + self.l2_reg * torch.eye(X.size(1))
+        B = X_centered.T @ y_centered
+        self.W = torch.linalg.solve(A, B)
+        self.b = y_mean - (X_mean @ self.W)
+        return self(X), y
+    
+    def forward(self, X: Tensor) -> Tensor:
+        return X @ self.W + self.b
+
 
 
 
@@ -403,7 +431,7 @@ class LogisticRegression(FittableModule):
 ######################################
 
 
-def create_layer(generator: torch.Generator,
+def create_layer(seed: int,
                 layer_name:str, 
                 in_dim:int, 
                 out_dim:int,
@@ -411,9 +439,9 @@ def create_layer(generator: torch.Generator,
                 sampling_method: str = "gradient",
                 ):
     if layer_name == "dense":
-        return Dense(generator, in_dim, out_dim, activation)
+        return Dense(seed+1, in_dim, out_dim, activation)
     elif layer_name == "SWIM":
-        return SWIMLayer(generator, in_dim, out_dim, activation, sampling_method)
+        return SWIMLayer(seed+1, in_dim, out_dim, activation, sampling_method)
     elif layer_name == "identity":
         return Identity()
     else:
@@ -446,9 +474,9 @@ class ResidualBlock(FittableModule):
         super(ResidualBlock, self).__init__()
         generator = torch.Generator().manual_seed(seed)
         self.residual_scale = residual_scale
-        self.first = create_layer(generator, layer1, in_dim, bottleneck_dim, None, sampling_method)
+        self.first = create_layer(seed, layer1, in_dim, bottleneck_dim, None, sampling_method)
         self.activation = activation
-        self.second = create_layer(generator, layer2, bottleneck_dim, in_dim, None, sampling_method)
+        self.second = create_layer(seed, layer2, bottleneck_dim, in_dim, None, sampling_method)
 
 
     def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
@@ -508,7 +536,7 @@ class ResNet(Sequential):
             output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression'].
         """
         generator = torch.Generator().manual_seed(seed)
-        upsample = create_layer(generator, 
+        upsample = create_layer(seed, 
                                      upsample_layer, 
                                      in_dim, 
                                      hidden_size, 
@@ -714,7 +742,7 @@ class RandFeatBoost(FittableModule):
         self.upscale_type = upscale_type
         self.second_in_resblock = second_in_resblock
 
-        self.upscale = create_layer(self.generator, upscale_type, in_dim, hidden_size, activation)
+        self.upscale = create_layer(seed, upscale_type, in_dim, hidden_size, activation)
         self.layers = []
         self.deltas = []
         self.classifiers = []
@@ -812,6 +840,7 @@ class StagewiseRandFeatBoostRegression(FittableModule):
                  upscale: Optional[str] = "dense",
                  ):
         super(StagewiseRandFeatBoostRegression, self).__init__()
+        self.seed = seed
         self.generator = torch.Generator().manual_seed(seed)
         self.hidden_dim = hidden_dim
         self.bottleneck_dim = bottleneck_dim
@@ -835,10 +864,10 @@ class StagewiseRandFeatBoostRegression(FittableModule):
         with torch.no_grad():
             #optional upscale
             if self.upscale == "dense":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, None)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, None)
                 X, y = self.upscale.fit(X, y)
             elif self.upscale == "SWIM":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, self.activation)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, self.activation)
                 X, y = self.upscale.fit(X, y)
 
             # Create regressor W_0
@@ -851,7 +880,7 @@ class StagewiseRandFeatBoostRegression(FittableModule):
             N = X.size(0)
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
-                layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
+                layer = create_layer(self.seed+t+1, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
                 F, y = layer.fit(X, y)
 
                 # Step 2: Obtain activation gradient and learn Delta
@@ -907,6 +936,7 @@ class GradientRandFeatBoostRegression(FittableModule):
                  upscale: Optional[str] = "dense",
                  ):
         super(GradientRandFeatBoostRegression, self).__init__()
+        self.seed = seed
         self.generator = torch.Generator().manual_seed(seed)
         self.hidden_dim = hidden_dim
         self.bottleneck_dim = bottleneck_dim
@@ -930,10 +960,10 @@ class GradientRandFeatBoostRegression(FittableModule):
         with torch.no_grad():
             #optional upscale
             if self.upscale == "dense":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, None)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, None)
                 X, y = self.upscale.fit(X, y)
             elif self.upscale == "SWIM":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, self.activation)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, self.activation)
                 X, y = self.upscale.fit(X, y)
 
             # Create regressor W_0
@@ -946,7 +976,7 @@ class GradientRandFeatBoostRegression(FittableModule):
             N = X.size(0)
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
-                layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
+                layer = create_layer(self.seed+t+1, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
                 F, y = layer.fit(X, y)
 
                 # Step 2: Obtain activation gradient and learn Delta
@@ -1043,6 +1073,7 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
                  upscale: Optional[str] = "dense",
                  ):
         super(GradientRandomFeatureBoostingClassification, self).__init__()
+        self.seed = seed
         self.generator = torch.Generator().manual_seed(seed)
         self.hidden_dim = hidden_dim
         self.bottleneck_dim = bottleneck_dim
@@ -1066,15 +1097,15 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
 
             #optional upscale
             if self.upscale == "dense":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, None)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, None)
                 X, y = self.upscale.fit(X, y)
             elif self.upscale == "SWIM":
-                self.upscale = create_layer(self.generator, self.upscale, X.shape[1], self.hidden_dim, self.activation)
+                self.upscale = create_layer(self.seed, self.upscale, X.shape[1], self.hidden_dim, self.activation)
                 X, y = self.upscale.fit(X, y)
 
             # Create classifier W_0
             cls = LogisticRegression(
-                self.generator,
+                self.seed,
                 in_dim = self.hidden_dim,
                 out_dim = self.out_dim,
                 l2_reg = self.l2_reg,
@@ -1087,7 +1118,7 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
             N = X.size(0)
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
-                layer = create_layer(self.generator, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
+                layer = create_layer(self.seed+t+1, self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
                 F, y = layer.fit(X, y)
 
                 # Step 2: Obtain activation gradient
