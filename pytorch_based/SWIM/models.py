@@ -116,8 +116,8 @@ class Dense(FittableModule):
     def fit(self, X:Tensor, y:Tensor):
         self.to(X.device)
         with torch.no_grad():
-            nn.init.normal_(self.dense.weight, mean=0, std=self.in_dim**-0.5, generator=self.generator)
-            nn.init.normal_(self.dense.bias, mean=0, std=self.in_dim**-0.25, generator=self.generator)
+            nn.init.normal_(self.dense.weight, mean=0, std=self.in_dim**-0.5)
+            nn.init.normal_(self.dense.bias, mean=0, std=self.in_dim**-0.25)
             return self(X), y
     
     def forward(self, X):
@@ -177,7 +177,7 @@ class SWIMLayer(FittableModule):
             #obtain pair indices
             n = 5*N
             idx1 = torch.arange(0, n, dtype=torch.int32, device=device) % N
-            delta = torch.randint(1, N, size=(n,), dtype=torch.int32, device=device, generator=self.generator)
+            delta = torch.randint(1, N, size=(n,), dtype=torch.int32, device=device)
             idx2 = (idx1 + delta) % N
             dx = X[idx2] - X[idx1]
             dists = torch.linalg.norm(dx, axis=1, keepdims=True)
@@ -199,7 +199,6 @@ class SWIMLayer(FittableModule):
                 p,
                 self.out_dim,
                 replacement=True,
-                generator=self.generator
                 )
             idx1 = idx1[selected_idx]
             dx = dx[selected_idx]
@@ -326,14 +325,12 @@ class LogisticRegressionSGD(FittableModule):
         device = X.device
         self.model.to(device)
 
-        # Create a CPU generator for DataLoader
-        data_loader_generator = torch.Generator(device='cpu')
+        # DataLoader
         dataset = torch.utils.data.TensorDataset(X, y_labels)
         loader = torch.utils.data.DataLoader(
             dataset, 
             batch_size=self.batch_size, 
             shuffle=True,
-            generator=data_loader_generator
         )
 
         # Training loop
@@ -395,7 +392,7 @@ class LogisticRegression(FittableModule):
             self.linear.weight.data = W
             self.linear.bias.data = b
         else:
-            kaiming_normal_with_generator(self.linear.weight, self.generator)
+            nn.init.kaiming_normal_(self.linear.weight)
             nn.init.zeros_(self.linear.bias)
         
         with torch.enable_grad():
@@ -507,7 +504,6 @@ class ResNet(Sequential):
         """Residual network with multiple residual blocks.
         
         Args:
-            generator (torch.Generator): PRNG object.
             in_dim (int): Input dimension.
             hidden_size (int): Dimension of the hidden layers.
             bottleneck_dim (int): Dimension of the bottleneck layer.
@@ -579,12 +575,6 @@ class NeuralEulerODE(ResNet):
 ######################################
 
 
-def kaiming_normal_with_generator(weight, generator=None):
-    fan_in = weight.size(1)
-    std = (2.0 / fan_in) ** 0.5
-    nn.init.normal_(weight, mean=0, std=std, generator=generator)
-
-
 class E2EResNet(FittableModule):
     def __init__(self, 
                  in_dim: int,
@@ -644,25 +634,23 @@ class E2EResNet(FittableModule):
         device = X.device
         self.to(device)
 
-        # Initialize weights for residual blocks with generator
-        kaiming_normal_with_generator(self.upsample.weight, self.generator)
+        # Initialize weights for residual blocks
+        nn.init.kaiming_normal_(self.upsample.weight)
         nn.init.zeros_(self.upsample.bias)
         for block in self.residual_blocks:
             for layer in block:
                 if isinstance(layer, nn.Linear):
-                    kaiming_normal_with_generator(layer.weight, self.generator)
+                    nn.init.kaiming_normal_(layer.weight)
                     nn.init.zeros_(layer.bias)
-        kaiming_normal_with_generator(self.output_layer.weight, self.generator)
+        nn.init.kaiming_normal_(self.output_layer.weight)
         nn.init.zeros_(self.output_layer.bias)
 
-        # Create a CPU generator for DataLoader
-        data_loader_generator = torch.Generator(device='cpu')
+        # DataLoader
         dataset = torch.utils.data.TensorDataset(X, y)
         loader = torch.utils.data.DataLoader(
             dataset, 
             batch_size=self.batch_size, 
             shuffle=True, 
-            generator=data_loader_generator
         )
 
         # training loop
@@ -730,12 +718,9 @@ class RandFeatBoost(FittableModule):
         X0 = X
         X, y = self.upscale.fit(X, y)
 
-        # Create a CPU generator for DataLoader
-        data_loader_generator = torch.Generator(device='cpu')
-
         # Layerwise boosting
         for t in range(self.n_blocks):
-            layer = ResidualBlock(self.generator, self.hidden_size, self.hidden_size, self.upscale_type, self.second_in_resblock, self.activation)
+            layer = ResidualBlock(self.hidden_size, self.hidden_size, self.upscale_type, self.second_in_resblock, self.activation)
             layer.fit(X, y)
 
             # Create top classifier
@@ -751,8 +736,7 @@ class RandFeatBoost(FittableModule):
             loader = torch.utils.data.DataLoader(
                 dataset, 
                 batch_size=self.batch_size, 
-                shuffle=True, 
-                generator=data_loader_generator
+                shuffle=True,
             )
 
             #learn top level classifier and boost
@@ -1111,7 +1095,6 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
                 # Step 3: Learn top level classifier
                 X = X + self.boost_lr * linesearch * G_hat
                 cls = LogisticRegression(
-                    self.generator,
                     in_dim = self.hidden_dim,
                     out_dim = self.out_dim,
                     l2_reg = self.l2_reg,
@@ -1147,3 +1130,64 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
 
 
 # TODO do layerwise SGD training for the stagewise boosting
+
+
+
+
+
+
+
+
+######################################
+###### XGBoost Wrappers ##############
+######################################
+
+import xgboost as xgb
+
+class XGBoostRegressorWrapper(FittableModule):
+    def __init__(self, 
+                 **kwargs,
+                 ):
+        super(XGBoostRegressorWrapper, self).__init__()
+        self.model = xgb.XGBRegressor(
+            **kwargs,
+        )
+
+    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        X_np = X.detach().cpu().numpy()
+        y_np = y.detach().cpu().numpy()
+        if y.dim() == 1:
+            y_np = y_np[:, None]
+        self.model.fit(X_np, y_np)
+        return self(X), y
+
+    def forward(self, X: Tensor) -> Tensor:
+        X_np = X.detach().cpu().numpy()
+        y_pred_np = self.model.predict(X_np)
+        if y_pred_np.ndim == 1:
+            y_pred_np = y_pred_np[:, None]
+        return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device)
+    
+
+from utils.utils import print_shape
+
+class XGBoostClassifierWrapper(FittableModule):
+    def __init__(self, 
+                 **kwargs,
+                 ):
+        super(XGBoostClassifierWrapper, self).__init__()
+        self.model = xgb.XGBClassifier(
+            **kwargs,
+        )
+
+    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        # Make y categorical from one_hot NOTE assumees y one-hot
+        X_np = X.detach().cpu().numpy()
+        y_np = torch.argmax(y, dim=1).detach().cpu().squeeze().numpy()
+        self.model.fit(X_np, y_np)
+        return self(X), y
+
+    def forward(self, X: Tensor) -> Tensor:
+        X_np = X.detach().cpu().numpy()
+        y_pred_np = self.model.predict_proba(X_np)
+        return torch.tensor(y_pred_np, dtype=X.dtype, device=X.device)
