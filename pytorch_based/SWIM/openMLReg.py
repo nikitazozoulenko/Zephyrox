@@ -293,6 +293,8 @@ def evaluate_pytorch_model_kfoldcv(
 
     Inner and outer kFoldCV use the same number of folds.
     """
+    torch.manual_seed(cv_seed)
+    np.random.seed(cv_seed)
     outer_cv = KFold(n_splits=k_folds, shuffle=True, random_state=cv_seed)
     outer_train_rmse_scores = []
     outer_test_rmse_scores = []
