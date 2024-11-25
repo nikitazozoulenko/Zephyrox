@@ -112,3 +112,11 @@ def evaluate_XGBoostRegressor(
         ModelClass, get_optuna_params, X, y, k_folds, cv_seed, 
         regression_or_classification, n_optuna_trials, device
     )
+
+
+############################################# |
+########### Run a specified model ########### |
+############################################# V
+
+if __name__ == "__main__":
+    pass

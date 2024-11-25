@@ -24,26 +24,29 @@ from ridge_ALOOCV import fit_ridge_ALOOCV
 
 class FittableModule(nn.Module):
     def __init__(self):
+        """Base class that wraps nn.Module with a .fit(X, y) 
+        and .fit_transform(X, y) method. Requires subclasses to
+        implement .forward, as well as either .fit or .fit_transform.
+        """
         super(FittableModule, self).__init__()
     
 
-    @abc.abstractmethod
-    def fit(self, 
-            X: Optional[Tensor] = None, 
-            y: Optional[Tensor] = None,
-        ) -> Tuple[Optional[Tensor], Optional[Tensor]]:
-        """Given neurons of the previous layer, and target labels, fit the 
-        module. Returns the forwarded activations and labels [f(X), y].
+    def fit(self, X: Tensor, y: Tensor):
+        """Fits the model given training data X and targets y.
 
         Args:
-            X (Optional[Tensor]): Forward-propagated activations of training data, shape (N, d).
-            y (Optional[Tensor]): Training labels, shape (N, p).
-        
-        Returns:
-            Forwarded activations and labels [f(X), y].
+            X (Tensor): Training data, shape (N, D).
+            y (Tensor): Training targets, shape (N, d).
         """
-        raise NotImplementedError("Method fit must be implemented in subclass.")
-        #return self(X), y
+        self.fit_transform(X, y)
+        return self
+    
+
+    def fit_transform(self, X: Tensor, y: Tensor) -> Tensor:
+        """Fit the module and return the transformed data."""
+        self.fit(X, y)
+        return self(X)
+
 
 
 class Sequential(FittableModule):
@@ -56,10 +59,10 @@ class Sequential(FittableModule):
         self.layers = nn.ModuleList(layers)
 
 
-    def fit(self, X: Tensor, y: Tensor):
+    def fit_transform(self, X: Tensor, y: Tensor):
         for layer in self.layers:
-            X, y = layer.fit(X, y)
-        return X, y
+            X  = layer.fit_transform(X, y)
+        return X
 
 
     def forward(self, X: Tensor) -> Tensor:
@@ -75,11 +78,8 @@ def make_fittable(module_class: Type[nn.Module]) -> Type[FittableModule]:
             FittableModule.__init__(self)
             module_class.__init__(self, *args, **kwargs)
         
-        def fit(self, 
-                X: Optional[Tensor] = None, 
-                y: Optional[Tensor] = None,
-            ) -> Tuple[Optional[Tensor], Optional[Tensor]]:
-            return self(X), y
+        def fit(self, X: Tensor, y: Tensor):
+            return self
     
     return FittableModuleWrapper
 
@@ -93,9 +93,8 @@ Identity = make_fittable(nn.Identity)
 ##### Layers                                                           #####
 ##### - Dense: Fully connected layer                                   #####
 ##### - SWIMLayer                                                      #####
-##### - RidgeCV (TODO currently just an sklearn wrapper)               #####
-##### - RidgeClassifierCV (TODO currently just an sklearn wrapper)     #####
-##### - LogisticRegressionSGD
+##### - RidgeClassifierCV (currently just an sklearn wrapper)          #####
+##### - LogisticRegressionSGD                                          #####
 ##### - LogisticRegression                                             #####
 ############################################################################
 
@@ -114,11 +113,10 @@ class Dense(FittableModule):
         self.activation = activation
     
     def fit(self, X:Tensor, y:Tensor):
+        nn.init.normal_(self.dense.weight, mean=0, std=self.in_dim**-0.5)
+        nn.init.normal_(self.dense.bias, mean=0, std=self.in_dim**-0.25)
         self.to(X.device)
-        with torch.no_grad():
-            nn.init.normal_(self.dense.weight, mean=0, std=self.in_dim**-0.5)
-            nn.init.normal_(self.dense.bias, mean=0, std=self.in_dim**-0.25)
-            return self(X), y
+        return self
     
     def forward(self, X):
         X = self.dense(X)
@@ -130,10 +128,11 @@ class Dense(FittableModule):
 
 class SWIMLayer(FittableModule):
     def __init__(self,
-                 in_dim: int, #TODO is not being used
+                 in_dim: int,
                  out_dim: int,
-                 activation: Optional[nn.Module] = None,
-                 sampling_method: Literal['uniform', 'gradient'] = 'gradient'
+                 activation: nn.Module = nn.Tanh(),
+                 epsilon: float = 0.01,
+                 sampling_method: Literal['uniform', 'gradient'] = 'gradient',
                  ):
         """Dense MLP layer with pair sampled weights (uniform or gradient-weighted).
 
@@ -141,41 +140,38 @@ class SWIMLayer(FittableModule):
             in_dim (int): Input dimension.
             out_dim (int): Output dimension.
             activation (nn.Module): Activation function.
+            epsilon (float): Small constant to avoid division by zero.
             sampling_method (str): Pair sampling method. Uniform or gradient-weighted.
         """
         super(SWIMLayer, self).__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
-        self.dense = nn.Linear(in_dim, out_dim)
-        self.sampling_method = sampling_method
         self.activation = activation
+        self.epsilon = epsilon
+        self.sampling_method = sampling_method
+
+        self.dense = nn.Linear(in_dim, out_dim)
 
 
-    def fit(self, 
-            X: Tensor, 
-            y: Tensor,
-        ) -> Tuple[Tensor, Tensor]:
+    def fit(self, X: Tensor, y: Tensor):
         """Given forward-propagated training data X at the previous 
         hidden layer, and supervised target labels y, fit the weights
         iteratively by letting rows of the weight matrix be given by
         pairs of samples from X. See paper for more details.
 
         Args:
-            X (Tensor): Forward-propagated activations of training data, shape (N, d).
+            X (Tensor): Forward-propagated activations of training data, shape (N, D).
             y (Tensor): Training labels, shape (N, p).
-        
-        Returns:
-            Forwarded activations and labels [f(X), y].
         """
         self.to(X.device)
         with torch.no_grad():
-            N, d = X.shape
+            N, D = X.shape
             dtype = X.dtype
             device = X.device
-            EPS = torch.tensor(0.1, dtype=dtype, device=device)
+            EPS = torch.tensor(self.epsilon, dtype=dtype, device=device)
 
             #obtain pair indices
-            n = 5*N
+            n = 3*N
             idx1 = torch.arange(0, n, dtype=torch.int32, device=device) % N
             delta = torch.randint(1, N, size=(n,), dtype=torch.int32, device=device)
             idx2 = (idx1 + delta) % N
@@ -209,14 +205,11 @@ class SWIMLayer(FittableModule):
             biases = -torch.einsum('ij,ij->i', weights, X[idx1]) - 0.5
             self.dense.weight.data = weights
             self.dense.bias.data = biases
-            return self(X), y
+            return self
     
 
     def forward(self, X):
-        X = self.dense(X)
-        if self.activation is not None:
-            X = self.activation(X)
-        return X
+        return self.activation(self.dense(X))
 
 
 
@@ -239,10 +232,10 @@ class RidgeCVModule(FittableModule):
         self.b = None
         self._alpha = None
 
-    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+    def fit(self, X: Tensor, y: Tensor):
         """Fit the RidgeCV model with ALOOCV"""
         self.W, self.b, self._alpha = fit_ridge_ALOOCV(X, y, alphas=self.alphas)
-        return self(X), y
+        return self
 
     def forward(self, X: Tensor) -> Tensor:
         return X @ self.W + self.b
@@ -255,7 +248,7 @@ class RidgeModule(FittableModule):
         self.W = None
         self.b = None
     
-    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+    def fit(self, X: Tensor, y: Tensor):
         """Fit the Ridge model with a fixed l2_reg"""
         X_mean = X.mean(dim=0, keepdim=True)
         y_mean = y.mean(dim=0, keepdim=True)
@@ -266,29 +259,27 @@ class RidgeModule(FittableModule):
         B = X_centered.T @ y_centered
         self.W = torch.linalg.solve(A, B)
         self.b = y_mean - (X_mean @ self.W)
-        return self(X), y
+        return self
     
     def forward(self, X: Tensor) -> Tensor:
         return X @ self.W + self.b
 
 
 
-
-
 class RidgeClassifierCVModule(FittableModule):
     def __init__(self, alphas=np.logspace(-1, 3, 10)):
-        """RidgeClassifierCV layer using sklearn's RidgeClassifierCV. TODO dont use sklearn"""
+        """RidgeClassifierCV layer using sklearn's RidgeClassifierCV."""
         super(RidgeClassifierCVModule, self).__init__()
         self.ridge = RidgeClassifierCV(alphas=alphas)
 
-    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+    def fit(self, X: Tensor, y: Tensor):
         """Fit the sklearn ridge model."""
         # Make y categorical from one_hot NOTE assumees y one-hot
         y_cat = torch.argmax(y, dim=1)
         X_np = X.detach().cpu().numpy().astype(np.float64)
         y_np = y_cat.detach().cpu().squeeze().numpy().astype(np.float64)
         self.ridge.fit(X_np, y_np)
-        return self(X), y
+        return self
 
     def forward(self, X: Tensor) -> Tensor:
         X_np = X.detach().cpu().numpy().astype(np.float64)
@@ -308,7 +299,7 @@ class LogisticRegressionSGD(FittableModule):
         self.num_epochs = num_epochs
         self.lr = lr
 
-    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+    def fit(self, X: Tensor, y: Tensor):
         # Determine input and output dimensions
         input_dim = X.size(1)
         if y.dim() > 1 and y.size(1) > 1:
@@ -356,7 +347,7 @@ class LogisticRegression(FittableModule):
                  out_dim: int = 10,
                  l2_reg: float = 0.001,
                  lr: float = 1.0,
-                 max_iter: int = 20,
+                 max_iter: int = 100,
                  ):
         super(LogisticRegression, self).__init__()
         self.linear = nn.Linear(in_dim, out_dim)
@@ -374,7 +365,7 @@ class LogisticRegression(FittableModule):
             X: Tensor, 
             y: Tensor,
             init_W_b: Optional[Tuple[Tensor, Tensor]] = None,
-            ) -> Tuple[Tensor, Tensor]:
+            ):
         
         # No onehot encoding
         if y.dim() > 1:
@@ -406,7 +397,7 @@ class LogisticRegression(FittableModule):
                 loss.backward()
                 return loss
             optimizer.step(closure)
-        return self(X), y
+        return self
 
 
     def forward(self, X: Tensor) -> Tensor:
@@ -428,56 +419,57 @@ def create_layer(
     if layer_name == "dense":
         return Dense(in_dim, out_dim, activation)
     elif layer_name == "SWIM":
-        return SWIMLayer(in_dim, out_dim, activation, sampling_method)
+        return SWIMLayer(in_dim, out_dim, activation, sampling_method=sampling_method)
     elif layer_name == "identity":
         return Identity()
     else:
         raise ValueError(f"layer_name must be one of ['dense', 'SWIM', 'identity']. Given: {layer_name}")
 
 
-class ResidualBlock(FittableModule):
-    def __init__(self, 
-                 in_dim: int,
-                 bottleneck_dim: int,
-                 layer1: str,
-                 layer2: str,
-                 activation: nn.Module = nn.Tanh(),
-                 residual_scale: float = 1.0,
-                 sampling_method: Literal['uniform', 'gradient'] = 'gradient',
-                 ):
-        """Residual block with 2 layers and a skip connection.
+
+# class ResidualBlock(FittableModule):
+#     def __init__(self, 
+#                  in_dim: int,
+#                  bottleneck_dim: int,
+#                  layer1: str,
+#                  layer2: str,
+#                  activation: nn.Module = nn.Tanh(),
+#                  residual_scale: float = 1.0,
+#                  sampling_method: Literal['uniform', 'gradient'] = 'gradient',
+#                  ):
+#         """Residual block with 2 layers and a skip connection.
         
-        Args:
-            in_dim (int): Input dimension.
-            bottleneck_dim (int): Dimension of the bottleneck layer.
-            layer1 (str): First layer in the block. One of ["dense", "swim", "identity"].
-            layer2 (str): See layer1.
-            activation (nn.Module): Activation function.
-            residual_scale (float): Scale of the residual connection.
-            sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
-        """
-        super(ResidualBlock, self).__init__()
-        self.residual_scale = residual_scale
-        self.first = create_layer(layer1, in_dim, bottleneck_dim, None, sampling_method)
-        self.activation = activation
-        self.second = create_layer(layer2, bottleneck_dim, in_dim, None, sampling_method)
+#         Args:
+#             in_dim (int): Input dimension.
+#             bottleneck_dim (int): Dimension of the bottleneck layer.
+#             layer1 (str): First layer in the block. One of ["dense", "swim", "identity"].
+#             layer2 (str): See layer1.
+#             activation (nn.Module): Activation function.
+#             residual_scale (float): Scale of the residual connection.
+#             sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
+#         """
+#         super(ResidualBlock, self).__init__()
+#         self.residual_scale = residual_scale
+#         self.first = create_layer(layer1, in_dim, bottleneck_dim, None, sampling_method)
+#         self.activation = activation
+#         self.second = create_layer(layer2, bottleneck_dim, in_dim, None, sampling_method)
 
 
-    def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
-        with torch.no_grad():
-            X0 = X
-            X, y = self.first.fit(X,y)
-            X = self.activation(X)
-            X, y = self.second.fit(X,y)
-        return X0 + X * self.residual_scale, y
+#     def fit(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+#         with torch.no_grad():
+#             X0 = X
+#             X, y = self.first.fit(X,y)
+#             X = self.activation(X)
+#             X, y = self.second.fit(X,y)
+#         return X0 + X * self.residual_scale, y
 
 
-    def forward(self, X: Tensor) -> Tensor:
-        X0 = X
-        X = self.first(X)
-        X = self.activation(X)
-        X = self.second(X)
-        return X0 + X * self.residual_scale
+#     def forward(self, X: Tensor) -> Tensor:
+#         X0 = X
+#         X = self.first(X)
+#         X = self.activation(X)
+#         X = self.second(X)
+#         return X0 + X * self.residual_scale
     
 
 #####################################
@@ -486,87 +478,87 @@ class ResidualBlock(FittableModule):
 ##### - NeuralEulerODE          #####
 #####################################
 
-class ResNet(Sequential):
-    def __init__(self, 
-                 in_dim: int,
-                 hidden_size: int,
-                 bottleneck_dim: int,
-                 n_blocks: int,
-                 upsample_layer: Literal['dense', 'SWIM', 'identity'] = 'SWIM',
-                 upsample_activation: nn.Module = nn.Tanh(),
-                 res_layer1: str = "SWIM",
-                 res_layer2: str = "dense",
-                 res_activation: nn.Module = nn.Tanh(),
-                 residual_scale: float = 1.0,
-                 sampling_method: Literal['uniform', 'gradient'] = 'gradient',
-                 output_layer: Literal['ridge', 'dense', 'identity', 'logistic regression'] = 'ridge',
-                 ):
-        """Residual network with multiple residual blocks.
+# class ResNet(Sequential):
+#     def __init__(self, 
+#                  in_dim: int,
+#                  hidden_size: int,
+#                  bottleneck_dim: int,
+#                  n_blocks: int,
+#                  upsample_layer: Literal['dense', 'SWIM', 'identity'] = 'SWIM',
+#                  upsample_activation: nn.Module = nn.Tanh(),
+#                  res_layer1: str = "SWIM",
+#                  res_layer2: str = "dense",
+#                  res_activation: nn.Module = nn.Tanh(),
+#                  residual_scale: float = 1.0,
+#                  sampling_method: Literal['uniform', 'gradient'] = 'gradient',
+#                  output_layer: Literal['ridge', 'dense', 'identity', 'logistic regression'] = 'ridge',
+#                  ):
+#         """Residual network with multiple residual blocks.
         
-        Args:
-            in_dim (int): Input dimension.
-            hidden_size (int): Dimension of the hidden layers.
-            bottleneck_dim (int): Dimension of the bottleneck layer.
-            n_blocks (int): Number of residual blocks.
-            upsample_layer (str): Layer before any residual connections. One of ['dense', 'SWIM', 'identity'].
-            upsample_activation (nn.Module): Activation function for the upsample layer.
-            res_layer1 (str): First layer in the block. One of ["dense", "swim", "identity"].
-            res_layer2 (str): See layer1.
-            res_activation (nn.Module): Activation function for the residual blocks.
-            residual_scale (float): Scale of the residual connection.
-            sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
-            output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression'].
-        """
-        upsample = create_layer(upsample_layer, 
-                                in_dim, 
-                                hidden_size, 
-                                upsample_activation, 
-                                sampling_method)
-        residual_blocks = [
-            ResidualBlock(hidden_size, 
-                          bottleneck_dim, 
-                          res_layer1, 
-                          res_layer2, 
-                          res_activation, 
-                          residual_scale, 
-                          sampling_method)
-            for _ in range(n_blocks)
-        ]
-        if output_layer == 'dense':
-            out = Dense(hidden_size, 1, None)
-        elif output_layer == 'ridge':
-            out = RidgeCVModule()
-        elif output_layer == 'ridge classifier':
-            out = RidgeClassifierCVModule()
-        elif output_layer == 'identity':
-            out = Identity()
-        elif output_layer == 'logistic regression':
-            out = LogisticRegression()
-        else:
-            raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
+#         Args:
+#             in_dim (int): Input dimension.
+#             hidden_size (int): Dimension of the hidden layers.
+#             bottleneck_dim (int): Dimension of the bottleneck layer.
+#             n_blocks (int): Number of residual blocks.
+#             upsample_layer (str): Layer before any residual connections. One of ['dense', 'SWIM', 'identity'].
+#             upsample_activation (nn.Module): Activation function for the upsample layer.
+#             res_layer1 (str): First layer in the block. One of ["dense", "swim", "identity"].
+#             res_layer2 (str): See layer1.
+#             res_activation (nn.Module): Activation function for the residual blocks.
+#             residual_scale (float): Scale of the residual connection.
+#             sampling_method (str): Pair sampling method for SWIM. One of ['uniform', 'gradient'].
+#             output_layer (str): Output layer. One of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression'].
+#         """
+#         upsample = create_layer(upsample_layer, 
+#                                 in_dim, 
+#                                 hidden_size, 
+#                                 upsample_activation, 
+#                                 sampling_method)
+#         residual_blocks = [
+#             ResidualBlock(hidden_size, 
+#                           bottleneck_dim, 
+#                           res_layer1, 
+#                           res_layer2, 
+#                           res_activation, 
+#                           residual_scale, 
+#                           sampling_method)
+#             for _ in range(n_blocks)
+#         ]
+#         if output_layer == 'dense':
+#             out = Dense(hidden_size, 1, None)
+#         elif output_layer == 'ridge':
+#             out = RidgeCVModule()
+#         elif output_layer == 'ridge classifier':
+#             out = RidgeClassifierCVModule()
+#         elif output_layer == 'identity':
+#             out = Identity()
+#         elif output_layer == 'logistic regression':
+#             out = LogisticRegression()
+#         else:
+#             raise ValueError(f"output_layer must be one of ['ridge', 'ridge classifier', 'dense', 'identity', 'logistic regression']. Given: {output_layer}")
         
-        super(ResNet, self).__init__(upsample, *residual_blocks, out)
+#         super(ResNet, self).__init__(upsample, *residual_blocks, out)
 
 
 
-class NeuralEulerODE(ResNet):
-    def __init__(self, 
-                 in_dim: int,
-                 hidden_size: int,
-                 n_layers: int,
-                 upsample_layer: Literal['dense', 'SWIM', 'identity'] = 'SWIM',
-                 upsample_activation: nn.Module = nn.Tanh(),
-                 res_layer: str = "SWIM",
-                 res_activation: nn.Module = nn.Tanh(),
-                 residual_scale: float = 1.0,
-                 sampling_method: Literal['uniform', 'gradient'] = 'gradient',
-                 output_layer: Literal['ridge', 'dense'] = 'dense',
-                 ):
-        """Euler discretization of Neural ODE."""
-        super(NeuralEulerODE, self).__init__(in_dim, hidden_size, None,
-                                             n_layers, upsample_layer, upsample_activation,
-                                             res_layer, "identity", res_activation,
-                                             residual_scale, sampling_method, output_layer)
+# class NeuralEulerODE(ResNet):
+#     def __init__(self, 
+#                  in_dim: int,
+#                  hidden_size: int,
+#                  n_layers: int,
+#                  upsample_layer: Literal['dense', 'SWIM', 'identity'] = 'SWIM',
+#                  upsample_activation: nn.Module = nn.Tanh(),
+#                  res_layer: str = "SWIM",
+#                  res_activation: nn.Module = nn.Tanh(),
+#                  residual_scale: float = 1.0,
+#                  sampling_method: Literal['uniform', 'gradient'] = 'gradient',
+#                  output_layer: Literal['ridge', 'dense'] = 'dense',
+#                  ):
+#         """Euler discretization of Neural ODE."""
+#         super(NeuralEulerODE, self).__init__(in_dim, hidden_size, None,
+#                                              n_layers, upsample_layer, upsample_activation,
+#                                              res_layer, "identity", res_activation,
+#                                              residual_scale, sampling_method, output_layer)
 
 
 ######################################
@@ -634,17 +626,6 @@ class E2EResNet(FittableModule):
         device = X.device
         self.to(device)
 
-        # Initialize weights for residual blocks
-        nn.init.kaiming_normal_(self.upsample.weight)
-        nn.init.zeros_(self.upsample.bias)
-        for block in self.residual_blocks:
-            for layer in block:
-                if isinstance(layer, nn.Linear):
-                    nn.init.kaiming_normal_(layer.weight)
-                    nn.init.zeros_(layer.bias)
-        nn.init.kaiming_normal_(self.output_layer.weight)
-        nn.init.zeros_(self.output_layer.bias)
-
         # DataLoader
         dataset = torch.utils.data.TensorDataset(X, y)
         loader = torch.utils.data.DataLoader(
@@ -656,14 +637,13 @@ class E2EResNet(FittableModule):
         # training loop
         for epoch in tqdm(range(self.epochs)):
             for batch_X, batch_y in loader:
-                # batch_X and batch_y are already on the device
                 self.optimizer.zero_grad()
                 outputs = self(batch_X)
                 loss = self.loss(outputs, batch_y)
                 loss.backward()
                 self.optimizer.step()
 
-        return self(X), y
+        return self
 
 
     def forward(self, X: Tensor) -> Tensor:
@@ -676,103 +656,6 @@ class E2EResNet(FittableModule):
         return X
 
 
-
-
-class RandFeatBoost(FittableModule):
-    def __init__(self, 
-                 in_dim: int = 1,
-                 hidden_size: int = 128, 
-                 out_dim: int = 1,
-                 n_blocks: int = 5,
-                 activation: nn.Module = nn.Tanh(),
-                 loss_fn: nn.Module = nn.MSELoss(),
-                 adam_lr: float = 1e-3,
-                 boost_lr: float = 1.0,
-                 epochs: int = 50,
-                 batch_size: int = 64,
-                 upscale_type = "SWIM", # "dense", identity
-                 second_in_resblock = "identity",
-                 ):
-        super(RandFeatBoost, self).__init__()
-        self.hidden_size = hidden_size
-        self.out_dim = out_dim
-        self.n_blocks = n_blocks
-        self.activation = activation
-        self.loss_fn = loss_fn
-        self.adam_lr = adam_lr
-        self.boost_lr = boost_lr
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.upscale_type = upscale_type
-        self.second_in_resblock = second_in_resblock
-
-        self.upscale = create_layer(upscale_type, in_dim, hidden_size, activation)
-        self.layers = []
-        self.deltas = []
-        self.classifiers = []
-        self.classifier = None #TODO currently only support logistic regression kind of
-
-
-    def fit(self, X: Tensor, y: Tensor):
-        device = X.device
-        X0 = X
-        X, y = self.upscale.fit(X, y)
-
-        # Layerwise boosting
-        for t in range(self.n_blocks):
-            layer = ResidualBlock(self.hidden_size, self.hidden_size, self.upscale_type, self.second_in_resblock, self.activation)
-            layer.fit(X, y)
-
-            # Create top classifier
-            classifier = nn.Linear(self.hidden_size, self.out_dim).to(device)
-            #DELTA = nn.Parameter(torch.zeros(1, self.hidden_size, device=device))
-            DELTA = nn.Parameter(torch.zeros(1, 1, device=device))
-            if t > 0:
-                classifier.weight.data = self.classifiers[-1].weight.data.clone()
-                classifier.bias.data = self.classifiers[-1].bias.data.clone()
-
-            #data loader
-            dataset = torch.utils.data.TensorDataset(X, y)
-            loader = torch.utils.data.DataLoader(
-                dataset, 
-                batch_size=self.batch_size, 
-                shuffle=True,
-            )
-
-            #learn top level classifier and boost
-            params = list(classifier.parameters()) + [DELTA]
-            self.optimizer = torch.optim.Adam(params, lr=self.adam_lr, weight_decay=1e-5)
-            for epoch in tqdm(range(self.epochs)):
-                for batch_X, batch_y in loader:
-                    self.optimizer.zero_grad()
-
-                    #forward pass
-                    FofX = layer(batch_X) - batch_X # due to how i programmed ResidualBlock...
-                    outputs = classifier(batch_X + DELTA * FofX)
-
-                    #loss and backprop
-                    loss = self.loss_fn(outputs, batch_y)
-                    loss.backward()
-                    self.optimizer.step()
-            
-            #after convergence, update layers, deltas, and X
-            self.layers.append(layer)
-            self.deltas.append(DELTA)
-            self.classifiers.append(classifier)
-            with torch.no_grad():
-                X = X + self.boost_lr * DELTA * (layer(X)-X)
-
-        self.classifier = classifier
-        return self(X0), y
-
-
-    def forward(self, X: Tensor) -> Tensor:
-        X = self.upscale(X)
-        for layer, DELTA in zip(self.layers, self.deltas):
-            FofX = layer(X) - X
-            X = X + self.boost_lr * DELTA * FofX
-        return self.classifier(X)
-    
 
 
 
@@ -821,10 +704,10 @@ class StagewiseRandFeatBoostRegression(FittableModule):
             #optional upscale
             if self.upscale == "dense":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, None)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
             elif self.upscale == "SWIM":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, self.activation)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
 
             # Create regressor W_0
             W, b, alpha = fit_ridge_ALOOCV(X, y)
@@ -837,7 +720,7 @@ class StagewiseRandFeatBoostRegression(FittableModule):
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
                 layer = create_layer(self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
-                F, y = layer.fit(X, y)
+                F = layer.fit_transform(X, y)
 
                 # Step 2: Obtain activation gradient and learn Delta
                 # X shape (N, D) --- ResNet neurons
@@ -914,10 +797,10 @@ class GradientRandFeatBoostRegression(FittableModule):
             #optional upscale
             if self.upscale == "dense":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, None)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
             elif self.upscale == "SWIM":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, self.activation)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
 
             # Create regressor W_0
             W, b, alpha = fit_ridge_ALOOCV(X, y)
@@ -930,7 +813,7 @@ class GradientRandFeatBoostRegression(FittableModule):
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
                 layer = create_layer(self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
-                F, y = layer.fit(X, y)
+                F = layer.fit_transform(X, y)
 
                 # Step 2: Obtain activation gradient and learn Delta
                 # X shape (N, D) --- ResNet neurons
@@ -1048,10 +931,10 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
             #optional upscale
             if self.upscale == "dense":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, None)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
             elif self.upscale == "SWIM":
                 self.upscale = create_layer(self.upscale, X.shape[1], self.hidden_dim, self.activation)
-                X, y = self.upscale.fit(X, y)
+                X = self.upscale.fit_transform(X, y)
 
             # Create classifier W_0
             cls = LogisticRegression(
@@ -1068,7 +951,7 @@ class GradientRandomFeatureBoostingClassification(FittableModule):
             for t in range(self.n_layers):
                 # Step 1: Create random feature layer   
                 layer = create_layer(self.feature_type, self.hidden_dim, self.bottleneck_dim, self.activation)
-                F, y = layer.fit(X, y)
+                F = layer.fit_transform(X, y)
 
                 # Step 2: Obtain activation gradient
                 # X shape (N, D) --- ResNet neurons
